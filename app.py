@@ -1,14 +1,12 @@
-# app.py
 import io
 import os
 import numpy as np
 import pandas as pd
 import streamlit as st
+from pathlib import Path
 
-# =========================
-# CONFIG & DEFAULTS
-# =========================
-st.set_page_config(page_title="Stimulation không còn đao khổ nữa:))", layout="wide")
+
+st.set_page_config(page_title="Simulation không còn đao khổ nữa:))", layout="wide")
 
 DEFAULT_NORMALIZATION = {
     "emp_type_map": {
@@ -40,12 +38,31 @@ REQUIRED_KEYS_CTRL = [
     "rate",
 ]
 
-# =========================
-# HELPERS
-# =========================
+
+
 @st.cache_data(show_spinner=False)
 def load_excel(file, sheet_name=None):
-    xls = pd.ExcelFile(file)
+    # file là UploadedFile của Streamlit
+    name = getattr(file, "name", "") or ""
+    ext = Path(name).suffix.lower()
+    if ext in [".xlsx", ".xlsm", ".xltx", ".xltm"]:
+        engine = "openpyxl"
+    elif ext == ".xls":
+        engine = "xlrd"        
+    elif ext == ".xlsb":
+        engine = "pyxlsb"      
+    else:
+        engine = None           
+
+    try:
+        xls = pd.ExcelFile(file, engine=engine)
+    except ImportError as e:
+        st.error(
+            "Thiếu thư viện đọc Excel cho định dạng này. "
+            "Hãy thêm vào requirements.txt:\n"
+            "- openpyxl (xlsx/xlsm)\n- xlrd==1.2.0 (xls)\n- pyxlsb (xlsb)"
+        )
+        raise
     if sheet_name is None:
         return {sn: xls.parse(sn) for sn in xls.sheet_names}
     else:
@@ -245,7 +262,7 @@ def guess(colnames, candidates):
 # =========================
 # UI
 # =========================
-st.title("Stimulation không còn đao khổ nữa:))")
+st.title("Simulation không còn đao khổ nữa:))")
 
 with st.sidebar:
     st.header("Upload Excel")
@@ -403,18 +420,12 @@ if run:
         ctrl_map,
         enabled_layers,
     )
-
-    # Tính output
     merged = compute_outputs(merged, ctrl_map, on_div0=on_div0)
 
     st.subheader("Results")
     st.write("Rows total:", len(merged))
     st.write("Mapped per layer:", info)
     st.dataframe(merged.head(100), use_container_width=True)
-
-    # =========================
-    # PIVOT TABLE (giống Excel)
-    # =========================
     st.markdown("---")
     st.header("Pivot Table quick check")
 
