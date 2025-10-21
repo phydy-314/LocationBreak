@@ -447,6 +447,9 @@ if "merged_result" in st.session_state:
 # =========================
 # PIVOT (DYNAMIC, LUÔN SỐNG)
 # =========================
+# =========================
+# PIVOT (DYNAMIC, DEFAULT GIỐNG EXCEL)
+# =========================
 st.markdown("---")
 st.header("Pivot Table (live)")
 
@@ -454,40 +457,92 @@ if "merged_result" not in st.session_state:
     st.info("Chưa có dữ liệu để pivot. Bấm **Run processing** trước.")
 else:
     merged = st.session_state["merged_result"]
-    info = st.session_state.get("merge_info", {})
+    cols_all = list(merged.columns)
+
+    # --- Defaults giống Excel ---
+    default_rows = [ctrl_map["gb"]]                           # GB
+    default_cols = [ctrl_map["month"]]                        # Revenue Month
+    default_filters = [ctrl_map["emp_type_like"], ctrl_map["dept"]]  # Header Service, Resource Dept
+    default_values = ["Capacity_Location"]                    # bạn có thể đổi
+
+    # Ghi/đọc state để giữ setting giữa các rerun
+    if "pivot_adv" not in st.session_state:
+        st.session_state["pivot_adv"] = False
+    if "pivot_rows" not in st.session_state:
+        st.session_state["pivot_rows"] = [c for c in default_rows if c in cols_all]
+    if "pivot_cols" not in st.session_state:
+        st.session_state["pivot_cols"] = [c for c in default_cols if c in cols_all]
+    if "pivot_filters" not in st.session_state:
+        st.session_state["pivot_filters"] = [c for c in default_filters if c in cols_all]
+    if "pivot_vals" not in st.session_state:
+        st.session_state["pivot_vals"] = [v for v in default_values if v in cols_all]
+    if "pivot_agg" not in st.session_state:
+        st.session_state["pivot_agg"] = "sum"
+    if "pivot_fill" not in st.session_state:
+        st.session_state["pivot_fill"] = 0.0
 
     with st.expander("Cấu hình Pivot", expanded=True):
-        cols_all = list(merged.columns)
-
-        # Đọc/ghi config vào session để giữ state giữa các rerun
-        def _get(key, default):
-            return st.session_state.get(key, default)
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.multiselect("Rows", options=cols_all,
-                           default=_get("pivot_rows", [ctrl_map["gb"], ctrl_map["dept"]]),
-                           key="pivot_rows")
-        with c2:
-            st.multiselect("Columns", options=cols_all,
-                           default=_get("pivot_cols", [ctrl_map["month"]]),
-                           key="pivot_cols")
-        with c3:
+        c_top = st.columns([1,1,1,1])
+        with c_top[0]:
+            st.checkbox("Advanced layout", key="pivot_adv",
+                        help="Bật để chỉnh Rows/Columns; tắt để cố định như Excel (GB / Revenue Month).")
+        with c_top[1]:
+            st.selectbox("Aggregation", ["sum", "mean", "count"],
+                         index=["sum","mean","count"].index(st.session_state["pivot_agg"]),
+                         key="pivot_agg")
+        with c_top[2]:
+            st.number_input("Fill blank with", value=float(st.session_state["pivot_fill"]),
+                            step=1.0, key="pivot_fill")
+        with c_top[3]:
+            # chỉ chọn Values là mở, Rows/Cols khoá nếu không Advanced
             st.multiselect("Values", options=cols_all,
-                           default=_get("pivot_vals", ["Capacity_Location", "Budget Location"]),
+                           default=st.session_state["pivot_vals"],
                            key="pivot_vals")
 
-        st.selectbox("Aggregation", ["sum", "mean", "count"],
-                     index=["sum", "mean", "count"].index(_get("pivot_agg", "sum")),
-                     key="pivot_agg")
-        st.number_input("Fill blank with", value=float(_get("pivot_fill", 0.0)),
-                        step=1.0, key="pivot_fill")
+        # Rows/Columns (khóa khi không Advanced)
+        c_mid = st.columns(2)
+        with c_mid[0]:
+            st.multiselect("Rows", options=cols_all,
+                           default=st.session_state["pivot_rows"],
+                           key="pivot_rows",
+                           disabled=not st.session_state["pivot_adv"])
+        with c_mid[1]:
+            st.multiselect("Columns", options=cols_all,
+                           default=st.session_state["pivot_cols"],
+                           key="pivot_cols",
+                           disabled=not st.session_state["pivot_adv"])
 
-    # Render pivot mỗi lần đổi config (không chạy lại phần nặng)
+        # Filters: giống Excel – chọn cột filter và chọn các giá trị trong mỗi filter
+        st.markdown("**Filters (giống Excel)**")
+        st.multiselect("Filter fields", options=cols_all,
+                       default=st.session_state["pivot_filters"],
+                       key="pivot_filters")
+        # Render bộ chọn giá trị cho từng filter field
+        filter_value_keys = {}
+        for fc in st.session_state["pivot_filters"]:
+            uniq_vals = sorted(map(str, merged[fc].dropna().unique().tolist()))
+            # có thêm lựa chọn (All)
+            opt = ["(All)"] + uniq_vals
+            key_name = f"flt_vals_{fc}"
+            filter_value_keys[fc] = key_name
+            if key_name not in st.session_state:
+                st.session_state[key_name] = ["(All)"]
+            st.multiselect(f"{fc} values", options=opt,
+                           default=st.session_state[key_name],
+                           key=key_name)
+
+    # Áp dụng filter vào dữ liệu trước khi pivot
+    dfp = merged.copy()
+    for fc in st.session_state["pivot_filters"]:
+        sel = st.session_state.get(filter_value_keys.get(fc, ""), ["(All)"])
+        if sel and "(All)" not in sel:
+            dfp = dfp[dfp[fc].astype(str).isin(sel)]
+
+    # Build Pivot
     try:
         aggfunc = {"sum": np.sum, "mean": np.mean, "count": "count"}[st.session_state["pivot_agg"]]
         pivot_df = pd.pivot_table(
-            merged,
+            dfp,
             index=st.session_state["pivot_rows"] or None,
             columns=st.session_state["pivot_cols"] or None,
             values=st.session_state["pivot_vals"] or None,
@@ -503,15 +558,26 @@ else:
         st.subheader("Pivot result")
         st.dataframe(pivot_df, use_container_width=True)
 
+        # Tải pivot
         pivot_buf = io.BytesIO()
         with pd.ExcelWriter(pivot_buf, engine="xlsxwriter") as writer:
+            # Xuất thêm phần Filter đang áp dụng vào sheet Notes cho tiện trace
+            notes = pd.DataFrame({
+                "Filter Field": st.session_state["pivot_filters"],
+                "Selected": [
+                    ", ".join([v for v in st.session_state[filter_value_keys[f]]])
+                    for f in st.session_state["pivot_filters"]
+                ],
+            })
             pivot_df.to_excel(writer, sheet_name="Pivot", index=False)
+            notes.to_excel(writer, sheet_name="Notes", index=False)
         st.download_button(
             "Download Pivot (Excel)",
             data=pivot_buf.getvalue(),
             file_name="pivot_result.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
     except Exception as e:
         st.error(f"Pivot error: {e}")
 
