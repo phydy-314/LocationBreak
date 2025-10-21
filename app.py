@@ -350,7 +350,7 @@ if missing_loc or missing_ctrl:
 # NORMALIZATION
 # =========================
 st.markdown("---")
-st.header("Normalization Rules (optional)")
+st.header("Normalization Rules")
 use_norm = st.checkbox("Apply normalization for Emp Type & Emp Location", value=True)
 if "norm_cfg" not in st.session_state:
     st.session_state["norm_cfg"] = DEFAULT_NORMALIZATION.copy()
@@ -379,7 +379,7 @@ if hasattr(st, "dialog"):
     @st.dialog("Confirm: Emp Type mapping")
     def confirm_dialog():
         st.write(
-            "By default, **Controlling → `emp_type_like`** (ví dụ `Header Service`) được xem tương đương **Location → `emp_type`**.\n\n"
+            "By default, **Controlling → `Header Service` được xem tương đương **Location → `emp_type`**.\n\n"
             "Bạn muốn giữ giả định này? Có thể chỉnh lại cột ở bước 3 nếu cần."
         )
         if st.button("Giữ giả định"):
@@ -434,7 +434,7 @@ if run:
     st.session_state["merged_result"] = merged
     st.session_state["merge_info"] = info
 
-    st.success("Processed ✔️ (Pivot ở bên dưới sẽ dùng kết quả này).")
+    st.success("Processed")
 
 # =========================
 # RESULTS SNAPSHOT (optional)
@@ -451,7 +451,7 @@ if "merged_result" in st.session_state:
 # PIVOT (DYNAMIC, DEFAULT GIỐNG EXCEL)
 # =========================
 st.markdown("---")
-st.header("Pivot Table (live)")
+st.header("Pivot Table")
 
 if "merged_result" not in st.session_state:
     st.info("Chưa có dữ liệu để pivot. Bấm **Run processing** trước.")
@@ -513,7 +513,7 @@ else:
                            disabled=not st.session_state["pivot_adv"])
 
         # Filters: giống Excel – chọn cột filter và chọn các giá trị trong mỗi filter
-        st.markdown("**Filters (giống Excel)**")
+        st.markdown("**Filters**")
         st.multiselect("Filter fields", options=cols_all,
                        default=st.session_state["pivot_filters"],
                        key="pivot_filters")
