@@ -327,12 +327,16 @@ with c2:
     st.subheader("Controlling columns")
     for key in REQUIRED_KEYS_CTRL:
         g = guess(df_ctrl.columns, ctrl_candidates.get(key, [])) or st.selectbox(
-            f"Select column for `{key}`", options=[None] + list(df_ctrl.columns), index=0, key=f"ctrl_{key}_first"
+            f"Select column for `{key}`",
+            options=[None] + list(df_ctrl.columns),
+            index=0,
+            key=f"ctrl_{key}_first",
         )
         ctrl_map[key] = st.selectbox(
             f"{key}",
-            options=[None] + list(df_ctrl.columns],
-            index=(list([None] + list(df_ctrl.columns)).index(g) if g in ([None] + list(df_ctrl.columns)) else 0),
+            options=[None] + list(df_ctrl.columns),   # ← ĐÃ SỬA: đóng bằng ')', không phải ']'
+            index=(list([None] + list(df_ctrl.columns)).index(g)
+                   if g in ([None] + list(df_ctrl.columns)) else 0),
             key=f"ctrl_{key}",
         )
 
