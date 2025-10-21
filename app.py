@@ -248,6 +248,58 @@ def guess(colnames, candidates):
         if c.lower() in col_lower:
             return col_lower[c.lower()]
     return None
+def ensure_month_order(df: pd.DataFrame, month_col: str) -> pd.DataFrame:
+    """Ép cột tháng thành Categorical theo thứ tự 1..12, giữ nguyên nhãn gốc."""
+    if month_col not in df.columns:
+        return df.copy()
+
+    df = df.copy()
+
+    # Map nhiều kiểu nhãn tháng về số 1..12
+    m = {
+        "jan": 1, "january": 1, "01": 1, "1": 1,
+        "feb": 2, "february": 2, "02": 2, "2": 2,
+        "mar": 3, "march": 3, "03": 3, "3": 3,
+        "apr": 4, "april": 4, "04": 4, "4": 4,
+        "may": 5, "05": 5, "5": 5,
+        "jun": 6, "june": 6, "06": 6, "6": 6,
+        "jul": 7, "july": 7, "07": 7, "7": 7,
+        "aug": 8, "august": 8, "08": 8, "8": 8,
+        "sep": 9, "sept": 9, "september": 9, "09": 9, "9": 9,
+        "oct": 10, "october": 10,
+        "nov": 11, "november": 11,
+        "dec": 12, "december": 12,
+    }
+
+    # Với numeric thì giữ nguyên
+    def month_num(x):
+        if pd.isna(x):
+            return np.nan
+        s = str(x).strip()
+        # thử số thẳng
+        try:
+            n = int(s)
+            if 1 <= n <= 12:
+                return n
+        except:
+            pass
+        return m.get(s.lower(), np.nan)
+
+    # Lấy thứ tự categories theo 1..12 nhưng giữ nhãn gốc
+    pairs = []
+    for v in df[month_col].dropna().unique().tolist():
+        n = month_num(v)
+        if not np.isnan(n):
+            pairs.append((v, int(n)))
+
+    if not pairs:
+        return df
+
+    pairs_sorted = sorted(pairs, key=lambda t: t[1])
+    ordered_labels = [v for v, _ in pairs_sorted]
+
+    df[month_col] = pd.Categorical(df[month_col], categories=ordered_labels, ordered=True)
+    return df
 
 # =========================
 # SIDEBAR
@@ -537,7 +589,10 @@ else:
         sel = st.session_state.get(filter_value_keys.get(fc, ""), ["(All)"])
         if sel and "(All)" not in sel:
             dfp = dfp[dfp[fc].astype(str).isin(sel)]
-
+    # Ép thứ tự tháng nếu tháng nằm ở Rows hoặc Columns
+    month_col = ctrl_map["month"]
+    if (month_col in st.session_state["pivot_rows"]) or (month_col in st.session_state["pivot_cols"]):
+    dfp = ensure_month_order(dfp, month_col)
     # Build Pivot
     try:
         aggfunc = {"sum": np.sum, "mean": np.mean, "count": "count"}[st.session_state["pivot_agg"]]
