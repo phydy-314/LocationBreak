@@ -592,7 +592,7 @@ else:
     # Ép thứ tự tháng nếu tháng nằm ở Rows hoặc Columns
     month_col = ctrl_map["month"]
     if (month_col in st.session_state["pivot_rows"]) or (month_col in st.session_state["pivot_cols"]):
-    dfp = ensure_month_order(dfp, month_col)
+        dfp = ensure_month_order(dfp, month_col)
     # Build Pivot
     try:
         aggfunc = {"sum": np.sum, "mean": np.mean, "count": "count"}[st.session_state["pivot_agg"]]
