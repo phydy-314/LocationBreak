@@ -88,6 +88,41 @@ def normalize_values(df_loc, col_emp_type, col_emp_loc, norm_cfg):
             .fillna(df[col_emp_loc].astype(str))
         )
     return df
+def normalize_columns(df: pd.DataFrame, norm_maps: dict) -> pd.DataFrame:
+    """
+    Áp dụng chuẩn hoá cho nhiều cột.
+    norm_maps = { "col_name": {"from1":"to1", "from2":"to2", ...}, ... }
+    """
+    if not norm_maps:
+        return df
+    out = df.copy()
+    for col, mapping in norm_maps.items():
+        if col in out.columns and isinstance(mapping, dict) and mapping:
+            s = out[col].astype(str)
+            out[col] = s.map(mapping).fillna(s)
+    return out
+
+
+def sample_mapping_table(df: pd.DataFrame, col: str, existing: dict | None, max_unique: int = 150) -> pd.DataFrame:
+    """
+    Tạo dataframe 2 cột [from, to] để hiển thị trong data_editor.
+    - Nếu đã có mapping tồn tại -> dùng mapping đó.
+    - Nếu chưa, lấy tới max_unique giá trị distinct của cột làm 'from' và copy sang 'to' để user sửa.
+    """
+    if existing:
+        rows = [(k, v) for k, v in existing.items()]
+        return pd.DataFrame(rows, columns=["from", "to"])
+    if col not in df.columns:
+        return pd.DataFrame(columns=["from", "to"])
+    uniq = (
+        df[col]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+    uniq = uniq[:max_unique]
+    return pd.DataFrame({"from": uniq, "to": uniq})
 
 def compute_ratio_expanding(df_loc, keys, emp_loc_col, cap_col):
     """Ratio theo KEYS + Emp Location. Nếu tổng theo keys = 0 -> Ratio = 0."""
@@ -403,19 +438,55 @@ if missing_loc or missing_ctrl:
 # =========================
 st.markdown("---")
 st.header("Normalization Rules")
-use_norm = st.checkbox("Apply normalization for Emp Type & Emp Location", value=True)
-if "norm_cfg" not in st.session_state:
-    st.session_state["norm_cfg"] = DEFAULT_NORMALIZATION.copy()
 
-with st.expander("Edit normalization maps"):
-    st.caption("Left column = from, Right column = to")
-    emp_map_df = pd.DataFrame(list(st.session_state["norm_cfg"]["emp_type_map"].items()), columns=["from", "to"])
-    emp_map_df = st.data_editor(emp_map_df, num_rows="dynamic", key="emp_type_editor")
-    st.session_state["norm_cfg"]["emp_type_map"] = dict(emp_map_df.values)
+use_norm = st.checkbox("Apply normalization (multi-column)", value=True)
 
-    loc_map_df = pd.DataFrame(list(st.session_state["norm_cfg"]["emp_location_map"].items()), columns=["from", "to"])
-    loc_map_df = st.data_editor(loc_map_df, num_rows="dynamic", key="emp_loc_editor")
-    st.session_state["norm_cfg"]["emp_location_map"] = dict(loc_map_df.values)
+# Khởi tạo state lưu mapping riêng cho Location & Controlling
+st.session_state.setdefault("norm_loc_maps", {})
+st.session_state.setdefault("norm_ctrl_maps", {})
+
+tab_loc, tab_ctrl = st.tabs(["Location", "Controlling"])
+
+with tab_loc:
+    st.caption("Chọn các cột bên **Location** cần chuẩn hoá rồi sửa bảng `from → to`.")
+    loc_cols = list(df_loc.columns)
+    sel_loc_cols = st.multiselect(
+        "Columns to normalize (Location)",
+        options=loc_cols,
+        default=[c for c in [loc_map.get("emp_type"), loc_map.get("emp_location")] if c in loc_cols]
+    )
+
+    for col in sel_loc_cols:
+        st.markdown(f"**Column:** `{col}`")
+        # Lấy mapping hiện có nếu đã lưu
+        existing = st.session_state["norm_loc_maps"].get(col, {})
+        # Tạo bảng gợi ý
+        edit_df = sample_mapping_table(df_loc, col, existing)
+        edit_df = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_loc_editor_{col}")
+        # Lưu lại vào session (lọc dòng rỗng)
+        clean_map = {str(a): str(b) for a, b in edit_df.itertuples(index=False) if str(a).strip() != ""}
+        st.session_state["norm_loc_maps"][col] = clean_map
+        st.divider()
+
+with tab_ctrl:
+    st.caption("Chọn các cột bên **Controlling** cần chuẩn hoá (nếu có).")
+    ctrl_cols = list(df_ctrl.columns)
+    # Gợi ý mặc định: Header Service / Resource Dept / GB / Revenue Month
+    defaults_ctrl = [ctrl_map.get("emp_type_like"), ctrl_map.get("dept"), ctrl_map.get("gb"), ctrl_map.get("month")]
+    sel_ctrl_cols = st.multiselect(
+        "Columns to normalize (Controlling)",
+        options=ctrl_cols,
+        default=[c for c in defaults_ctrl if c in ctrl_cols]
+    )
+
+    for col in sel_ctrl_cols:
+        st.markdown(f"**Column:** `{col}`")
+        existing = st.session_state["norm_ctrl_maps"].get(col, {})
+        edit_df = sample_mapping_table(df_ctrl, col, existing)
+        edit_df = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_ctrl_editor_{col}")
+        clean_map = {str(a): str(b) for a, b in edit_df.itertuples(index=False) if str(a).strip() != ""}
+        st.session_state["norm_ctrl_maps"][col] = clean_map
+        st.divider()
 
 # =========================
 # CONFIRMATION (dialog fallback)
@@ -477,12 +548,13 @@ if run:
     loc = df_loc.copy()
     ctrl = df_ctrl.copy()
     if use_norm:
-        loc = normalize_values(loc, loc_map["emp_type"], loc_map["emp_location"], st.session_state["norm_cfg"])
+        loc = normalize_columns(loc, st.session_state.get("norm_loc_maps", {}))
+        ctrl = normalize_columns(ctrl, st.session_state.get("norm_ctrl_maps", {}))
+
 
     merged, info = run_fallback_merges_expand(ctrl, loc, loc_map, ctrl_map, enabled_layers)
     merged = compute_outputs(merged, ctrl_map, on_div0=on_div0)
 
-    # LƯU VÀO SESSION để Pivot dùng lại (dynamic, không cần run lại)
     st.session_state["merged_result"] = merged
     st.session_state["merge_info"] = info
 
