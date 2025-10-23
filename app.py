@@ -1,15 +1,17 @@
 import io
 import os
+from pathlib import Path
+import re
+
 import numpy as np
 import pandas as pd
 import streamlit as st
-from pathlib import Path
 
 # =========================
 # PAGE CONFIG
 # =========================
-st.set_page_config(page_title="Simulation không còn đao khổ nữa:))", layout="wide")
-st.title("Simulation không còn đao khổ nữa:))")
+st.set_page_config(page_title="Stimulation — no more pain :))", layout="wide")
+st.title("Stimulation — no more pain :))")
 
 # =========================
 # CONSTANTS
@@ -46,17 +48,23 @@ REQUIRED_KEYS_CTRL = [
 # =========================
 # HELPERS
 # =========================
+def _clean_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Trim and normalize weird spaces in column names."""
+    df = df.copy()
+    df.columns = [str(c).replace("\u00A0", " ").strip() for c in df.columns]
+    return df
+
 @st.cache_data(show_spinner=False)
 def load_excel(file, sheet_name=None):
-    """Đọc excel theo engine đúng định dạng; báo lỗi rõ nếu thiếu lib."""
+    """Load Excel with proper engine; clean column names; show clear error if engine is missing."""
     name = getattr(file, "name", "") or ""
     ext = Path(name).suffix.lower()
     if ext in [".xlsx", ".xlsm", ".xltx", ".xltm"]:
         engine = "openpyxl"
     elif ext == ".xls":
-        engine = "xlrd"          # cần xlrd==1.2.0
+        engine = "xlrd"          # xlrd==1.2.0 is needed for .xls
     elif ext == ".xlsb":
-        engine = "pyxlsb"        # cần pyxlsb
+        engine = "pyxlsb"        # pyxlsb is needed for .xlsb
     else:
         engine = None
 
@@ -64,34 +72,20 @@ def load_excel(file, sheet_name=None):
         xls = pd.ExcelFile(file, engine=engine)
     except ImportError:
         st.error(
-            "Thiếu thư viện đọc Excel cho định dạng này. Thêm vào requirements.txt:\n"
+            "Missing Excel engine for this format. Add to requirements.txt:\n"
             "- openpyxl (xlsx/xlsm)\n- xlrd==1.2.0 (xls)\n- pyxlsb (xlsb)"
         )
         raise
-    if sheet_name is None:
-        return {sn: xls.parse(sn) for sn in xls.sheet_names}
-    else:
-        return {sheet_name: xls.parse(sheet_name)}
 
-def normalize_values(df_loc, col_emp_type, col_emp_loc, norm_cfg):
-    df = df_loc.copy()
-    if col_emp_type in df.columns:
-        df[col_emp_type] = (
-            df[col_emp_type].astype(str)
-            .map(norm_cfg.get("emp_type_map", {}))
-            .fillna(df[col_emp_type].astype(str))
-        )
-    if col_emp_loc in df.columns:
-        df[col_emp_loc] = (
-            df[col_emp_loc].astype(str)
-            .map(norm_cfg.get("emp_location_map", {}))
-            .fillna(df[col_emp_loc].astype(str))
-        )
-    return df
+    if sheet_name is None:
+        return {sn: _clean_cols(xls.parse(sn)) for sn in xls.sheet_names}
+    else:
+        return {sheet_name: _clean_cols(xls.parse(sheet_name))}
+
 def normalize_columns(df: pd.DataFrame, norm_maps: dict) -> pd.DataFrame:
     """
-    Áp dụng chuẩn hoá cho nhiều cột.
-    norm_maps = { "col_name": {"from1":"to1", "from2":"to2", ...}, ... }
+    Apply normalization for multiple columns.
+    norm_maps = { "col_name": {"from1":"to1", ...}, ... }
     """
     if not norm_maps:
         return df
@@ -102,12 +96,10 @@ def normalize_columns(df: pd.DataFrame, norm_maps: dict) -> pd.DataFrame:
             out[col] = s.map(mapping).fillna(s)
     return out
 
-
 def sample_mapping_table(df: pd.DataFrame, col: str, existing: dict | None, max_unique: int = 150) -> pd.DataFrame:
     """
-    Tạo dataframe 2 cột [from, to] để hiển thị trong data_editor.
-    - Nếu đã có mapping tồn tại -> dùng mapping đó.
-    - Nếu chưa, lấy tới max_unique giá trị distinct của cột làm 'from' và copy sang 'to' để user sửa.
+    Provide a 2-col [from, to] table for data_editor.
+    Prefill from existing map, or build identity pairs from distinct values.
     """
     if existing:
         rows = [(k, v) for k, v in existing.items()]
@@ -125,7 +117,7 @@ def sample_mapping_table(df: pd.DataFrame, col: str, existing: dict | None, max_
     return pd.DataFrame({"from": uniq, "to": uniq})
 
 def compute_ratio_expanding(df_loc, keys, emp_loc_col, cap_col):
-    """Ratio theo KEYS + Emp Location. Nếu tổng theo keys = 0 -> Ratio = 0."""
+    """Build location split ratios by KEYS + Emp Location. If total=0 → Ratio=0 (still treated as matched)."""
     df = df_loc.copy()
     use_cols = [c for c in keys + [emp_loc_col, cap_col] if c in df.columns]
     df = df[use_cols].copy()
@@ -146,7 +138,7 @@ def compute_ratio_expanding(df_loc, keys, emp_loc_col, cap_col):
     return ratio_df.drop(columns=["_cap_loc", "_cap_total"])
 
 def coalesce_to(df: pd.DataFrame, canonical: str, base_names: list[str]) -> pd.DataFrame:
-    """Gom các biến thể cột (base + *_x/_y/...) về 1 cột chuẩn `canonical`."""
+    """Coalesce column variants (base + *_x/_y/...) into one `canonical` column."""
     cand_cols = []
     for base in base_names:
         if base in df.columns:
@@ -166,9 +158,10 @@ def coalesce_to(df: pd.DataFrame, canonical: str, base_names: list[str]) -> pd.D
 
 def run_fallback_merges_expand(df_ctrl, df_loc, m_loc, m_ctrl, enabled_layers):
     """
-    Tách → map → append theo từng lớp, nổ theo Emp Location.
-    Sau mỗi lớp chỉ append phần đã map; phần còn NaN đi lớp sau.
-    Sau L4: không append phần còn blank. Gom suffix sau mỗi merge.
+    Expand-by-location across 4 layers with staged append:
+      - At each layer: take only unmapped rows, expand by location, append mapped rows back.
+      - Unmapped after L4 are not appended.
+      - Coalesce potential *_x/_y suffixes after merges.
     """
     base = df_ctrl.copy()
     if "Capacity_Location" not in base.columns:
@@ -283,14 +276,13 @@ def guess(colnames, candidates):
         if c.lower() in col_lower:
             return col_lower[c.lower()]
     return None
+
 def ensure_month_order(df: pd.DataFrame, month_col: str) -> pd.DataFrame:
-    """Ép cột tháng thành Categorical theo thứ tự 1..12, giữ nguyên nhãn gốc."""
+    """Force month column to ordered categorical (1..12) while keeping original labels."""
     if month_col not in df.columns:
         return df.copy()
 
     df = df.copy()
-
-    # Map nhiều kiểu nhãn tháng về số 1..12
     m = {
         "jan": 1, "january": 1, "01": 1, "1": 1,
         "feb": 2, "february": 2, "02": 2, "2": 2,
@@ -305,44 +297,51 @@ def ensure_month_order(df: pd.DataFrame, month_col: str) -> pd.DataFrame:
         "nov": 11, "november": 11,
         "dec": 12, "december": 12,
     }
-
-    # Với numeric thì giữ nguyên
     def month_num(x):
-        if pd.isna(x):
-            return np.nan
+        if pd.isna(x): return np.nan
         s = str(x).strip()
-        # thử số thẳng
         try:
             n = int(s)
-            if 1 <= n <= 12:
-                return n
-        except:
-            pass
+            if 1 <= n <= 12: return n
+        except: pass
         return m.get(s.lower(), np.nan)
 
-    # Lấy thứ tự categories theo 1..12 nhưng giữ nhãn gốc
     pairs = []
     for v in df[month_col].dropna().unique().tolist():
         n = month_num(v)
-        if not np.isnan(n):
-            pairs.append((v, int(n)))
-
-    if not pairs:
-        return df
+        if not np.isnan(n): pairs.append((v, int(n)))
+    if not pairs: return df
 
     pairs_sorted = sorted(pairs, key=lambda t: t[1])
-    ordered_labels = [v for v, _ in pairs_sorted]
-
+    ordered_labels = [v for v,_ in pairs_sorted]
     df[month_col] = pd.Categorical(df[month_col], categories=ordered_labels, ordered=True)
     return df
+
+def keysafe(s: str) -> str:
+    """Sanitize widget keys from arbitrary column names."""
+    return re.sub(r"[^A-Za-z0-9_]+", "_", str(s))
+
+def validate_mapping(df_loc, df_ctrl, m_loc, m_ctrl):
+    required_loc = ["gb","dept","emp_type","month","emp_location","capacity_loc"]
+    required_ctrl = ["gb","dept","emp_type_like","month","capacity","budget","rate"]
+    missing = {"Location": [], "Controlling": []}
+    for k in required_loc:
+        col = m_loc.get(k)
+        if not col or col not in df_loc.columns:
+            missing["Location"].append((k, col))
+    for k in required_ctrl:
+        col = m_ctrl.get(k)
+        if not col or col not in df_ctrl.columns:
+            missing["Controlling"].append((k, col))
+    return missing
 
 # =========================
 # SIDEBAR
 # =========================
 with st.sidebar:
-    st.header("Upload Excel")
+    st.header("Upload")
     excel_file = st.file_uploader("Upload .xlsx/.xlsm/.xls/.xlsb", type=["xlsx", "xlsm", "xls", "xlsb"])
-    on_div0 = st.selectbox("When divide-by-zero:", ["zero", "blank"], index=0)
+    on_div0 = st.selectbox("Divide-by-zero handling", ["zero", "blank"], index=0)
 
 if not excel_file:
     st.info("Upload your Excel to get started.")
@@ -370,6 +369,36 @@ with cols[1]:
 
 df_loc = all_sheets[sheet_loc].copy()
 df_ctrl = all_sheets[sheet_ctrl].copy()
+
+# Reset state when sheets change
+if "last_sheet_loc" not in st.session_state:
+    st.session_state["last_sheet_loc"] = sheet_loc
+if "last_sheet_ctrl" not in st.session_state:
+    st.session_state["last_sheet_ctrl"] = sheet_ctrl
+
+sheet_changed = (
+    st.session_state["last_sheet_loc"] != sheet_loc
+    or st.session_state["last_sheet_ctrl"] != sheet_ctrl
+)
+if sheet_changed:
+    for k in list(st.session_state.keys()):
+        if k.startswith("loc_") or k.startswith("ctrl_"):
+            del st.session_state[k]
+    st.session_state.pop("norm_loc_maps", None)
+    st.session_state.pop("norm_ctrl_maps", None)
+    st.session_state.pop("pivot_rows", None)
+    st.session_state.pop("pivot_cols", None)
+    st.session_state.pop("pivot_filters", None)
+    st.session_state.pop("pivot_vals", None)
+    st.session_state.pop("pivot_adv", None)
+    st.session_state.pop("pivot_agg", None)
+    st.session_state.pop("pivot_fill", None)
+    st.session_state.pop("merged_result", None)
+    st.session_state.pop("merge_info", None)
+
+    st.session_state["last_sheet_loc"] = sheet_loc
+    st.session_state["last_sheet_ctrl"] = sheet_ctrl
+    st.info("Sheet changed — please map columns again if needed.")
 
 # =========================
 # MAPPING UI
@@ -401,54 +430,49 @@ c1, c2 = st.columns(2)
 with c1:
     st.subheader("Location columns")
     for key in REQUIRED_KEYS_LOCATION:
-        g = guess(df_loc.columns, loc_candidates.get(key, [])) or st.selectbox(
-            f"Select column for `{key}`", options=[None] + list(df_loc.columns), index=0, key=f"loc_{key}_first"
-        )
-        loc_map[key] = st.selectbox(
-            f"{key}",
-            options=[None] + list(df_loc.columns),
-            index=(list([None] + list(df_loc.columns)).index(g) if g in ([None] + list(df_loc.columns)) else 0),
-            key=f"loc_{key}",
-        )
+        opts = [None] + list(df_loc.columns)
+        g = guess(df_loc.columns, loc_candidates.get(key, []))
+        idx = opts.index(g) if g in opts else 0
+        loc_map[key] = st.selectbox(f"{key}", options=opts, index=idx, key=f"loc_{key}")
 with c2:
     st.subheader("Controlling columns")
     for key in REQUIRED_KEYS_CTRL:
-        g = guess(df_ctrl.columns, ctrl_candidates.get(key, [])) or st.selectbox(
-            f"Select column for `{key}`",
-            options=[None] + list(df_ctrl.columns),
-            index=0,
-            key=f"ctrl_{key}_first",
-        )
-        ctrl_map[key] = st.selectbox(
-            f"{key}",
-            options=[None] + list(df_ctrl.columns),   # ← ĐÃ SỬA: đóng bằng ')', không phải ']'
-            index=(list([None] + list(df_ctrl.columns)).index(g)
-                   if g in ([None] + list(df_ctrl.columns)) else 0),
-            key=f"ctrl_{key}",
-        )
+        opts = [None] + list(df_ctrl.columns)
+        g = guess(df_ctrl.columns, ctrl_candidates.get(key, []))
+        idx = opts.index(g) if g in opts else 0
+        ctrl_map[key] = st.selectbox(f"{key}", options=opts, index=idx, key=f"ctrl_{key}")
 
-missing_loc = [k for k in REQUIRED_KEYS_LOCATION if not loc_map.get(k)]
-missing_ctrl = [k for k in REQUIRED_KEYS_CTRL if not ctrl_map.get(k)]
-if missing_loc or missing_ctrl:
-    st.error(f"Missing mapping: Location -> {missing_loc} | Controlling -> {missing_ctrl}")
-    st.stop()
+# Validate mapping – block Run until all required keys are valid
+missing = validate_mapping(df_loc, df_ctrl, loc_map, ctrl_map)
+run_disabled = bool(missing["Location"] or missing["Controlling"])
+
+with st.expander("Diagnostics (preview)", expanded=False):
+    if missing["Location"] or missing["Controlling"]:
+        st.error("Missing/invalid mapping:")
+        if missing["Location"]:
+            st.write("Location:", missing["Location"])
+        if missing["Controlling"]:
+            st.write("Controlling:", missing["Controlling"])
+    st.write("Location columns:", list(df_loc.columns))
+    st.write("Controlling columns:", list(df_ctrl.columns))
+    st.dataframe(df_loc.head(5), use_container_width=True)
+    st.dataframe(df_ctrl.head(5), use_container_width=True)
 
 # =========================
-# NORMALIZATION
+# NORMALIZATION (dynamic)
 # =========================
 st.markdown("---")
 st.header("Normalization Rules")
 
 use_norm = st.checkbox("Apply normalization (multi-column)", value=True)
 
-# Khởi tạo state lưu mapping riêng cho Location & Controlling
 st.session_state.setdefault("norm_loc_maps", {})
 st.session_state.setdefault("norm_ctrl_maps", {})
 
 tab_loc, tab_ctrl = st.tabs(["Location", "Controlling"])
 
 with tab_loc:
-    st.caption("Chọn các cột bên **Location** cần chuẩn hoá rồi sửa bảng `from → to`.")
+    st.caption("Pick Location columns to normalize, then edit the from→to mapping table.")
     loc_cols = list(df_loc.columns)
     sel_loc_cols = st.multiselect(
         "Columns to normalize (Location)",
@@ -458,20 +482,16 @@ with tab_loc:
 
     for col in sel_loc_cols:
         st.markdown(f"**Column:** `{col}`")
-        # Lấy mapping hiện có nếu đã lưu
         existing = st.session_state["norm_loc_maps"].get(col, {})
-        # Tạo bảng gợi ý
         edit_df = sample_mapping_table(df_loc, col, existing)
-        edit_df = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_loc_editor_{col}")
-        # Lưu lại vào session (lọc dòng rỗng)
+        edit_df = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_loc_editor_{keysafe(col)}")
         clean_map = {str(a): str(b) for a, b in edit_df.itertuples(index=False) if str(a).strip() != ""}
         st.session_state["norm_loc_maps"][col] = clean_map
         st.divider()
 
 with tab_ctrl:
-    st.caption("Chọn các cột bên **Controlling** cần chuẩn hoá (nếu có).")
+    st.caption("Pick Controlling columns to normalize (optional).")
     ctrl_cols = list(df_ctrl.columns)
-    # Gợi ý mặc định: Header Service / Resource Dept / GB / Revenue Month
     defaults_ctrl = [ctrl_map.get("emp_type_like"), ctrl_map.get("dept"), ctrl_map.get("gb"), ctrl_map.get("month")]
     sel_ctrl_cols = st.multiselect(
         "Columns to normalize (Controlling)",
@@ -483,40 +503,18 @@ with tab_ctrl:
         st.markdown(f"**Column:** `{col}`")
         existing = st.session_state["norm_ctrl_maps"].get(col, {})
         edit_df = sample_mapping_table(df_ctrl, col, existing)
-        edit_df = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_ctrl_editor_{col}")
+        edit_df = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_ctrl_editor_{keysafe(col)}")
         clean_map = {str(a): str(b) for a, b in edit_df.itertuples(index=False) if str(a).strip() != ""}
         st.session_state["norm_ctrl_maps"][col] = clean_map
         st.divider()
 
 # =========================
-# CONFIRMATION (dialog fallback)
+# CONFIRMATION (simple)
 # =========================
-if "confirm_emp_type_link" not in st.session_state:
-    st.session_state["confirm_emp_type_link"] = False
-
-def _confirm_ok():
-    st.session_state["confirm_emp_type_link"] = True
-    st.rerun()
-
-if hasattr(st, "dialog"):
-    @st.dialog("Confirm: Emp Type mapping")
-    def confirm_dialog():
-        st.write(
-            "By default, **Controlling → `Header Service` được xem tương đương **Location → `emp_type`**.\n\n"
-            "Bạn muốn giữ giả định này? Có thể chỉnh lại cột ở bước 3 nếu cần."
-        )
-        if st.button("Giữ giả định"):
-            _confirm_ok()
-        if st.button("Mình sẽ tự đổi cột"):
-            _confirm_ok()
-    if not st.session_state["confirm_emp_type_link"]:
-        confirm_dialog()
-else:
-    st.header("Confirm: Emp Type mapping")
-    keep = st.checkbox("Treat Controlling → `emp_type_like` ≡ Location → `emp_type`", value=True)
-    if keep and not st.session_state["confirm_emp_type_link"]:
-        if st.button("Xác nhận"):
-            _confirm_ok()
+st.markdown("---")
+st.header("Confirm: Emp Type mapping")
+st.caption("By default, Controlling → `emp_type_like` is treated as equivalent to Location → `emp_type`. Change the mapping above if needed.")
+st.checkbox("Keep this assumption", value=True, key="confirm_emp_type_link")
 
 # =========================
 # LAYER TOGGLES + RUN
@@ -536,7 +534,8 @@ enabled_layers = {"L1": L1, "L2": L2, "L3": L3, "L4": L4}
 
 st.markdown("---")
 st.header("Run")
-run = st.button("Run processing", type="primary")
+run = st.button("Run processing", type="primary", disabled=run_disabled,
+                help="Select all required columns before running." if run_disabled else None)
 reclear = st.button("Clear last result")
 
 if reclear:
@@ -551,7 +550,6 @@ if run:
         loc = normalize_columns(loc, st.session_state.get("norm_loc_maps", {}))
         ctrl = normalize_columns(ctrl, st.session_state.get("norm_ctrl_maps", {}))
 
-
     merged, info = run_fallback_merges_expand(ctrl, loc, loc_map, ctrl_map, enabled_layers)
     merged = compute_outputs(merged, ctrl_map, on_div0=on_div0)
 
@@ -561,7 +559,7 @@ if run:
     st.success("Processed")
 
 # =========================
-# RESULTS SNAPSHOT (optional)
+# RESULTS SNAPSHOT
 # =========================
 if "merged_result" in st.session_state:
     st.subheader("Results snapshot")
@@ -569,47 +567,37 @@ if "merged_result" in st.session_state:
     st.dataframe(st.session_state["merged_result"].head(100), use_container_width=True)
 
 # =========================
-# PIVOT (DYNAMIC, LUÔN SỐNG)
-# =========================
-# =========================
-# PIVOT (DYNAMIC, DEFAULT GIỐNG EXCEL)
+# PIVOT (dynamic)
 # =========================
 st.markdown("---")
 st.header("Pivot Table")
 
 if "merged_result" not in st.session_state:
-    st.info("Chưa có dữ liệu để pivot. Bấm **Run processing** trước.")
+    st.info("No data to pivot. Click **Run processing** first.")
 else:
     merged = st.session_state["merged_result"]
     cols_all = list(merged.columns)
 
-    # --- Defaults giống Excel ---
-    default_rows = [ctrl_map["gb"]]                           # GB
-    default_cols = [ctrl_map["month"]]                        # Revenue Month
-    default_filters = [ctrl_map["emp_type_like"], ctrl_map["dept"]]  # Header Service, Resource Dept
-    default_values = ["Capacity_Location"]                    # bạn có thể đổi
+    # Excel-like defaults (only if the columns exist)
+    default_rows = [c for c in [ctrl_map.get("gb")] if c in cols_all]
+    default_cols = [c for c in [ctrl_map.get("month")] if c in cols_all]
+    default_filters = [c for c in [ctrl_map.get("emp_type_like"), ctrl_map.get("dept")] if c in cols_all]
+    default_values = [v for v in ["Capacity_Location"] if v in cols_all]
 
-    # Ghi/đọc state để giữ setting giữa các rerun
-    if "pivot_adv" not in st.session_state:
-        st.session_state["pivot_adv"] = False
-    if "pivot_rows" not in st.session_state:
-        st.session_state["pivot_rows"] = [c for c in default_rows if c in cols_all]
-    if "pivot_cols" not in st.session_state:
-        st.session_state["pivot_cols"] = [c for c in default_cols if c in cols_all]
-    if "pivot_filters" not in st.session_state:
-        st.session_state["pivot_filters"] = [c for c in default_filters if c in cols_all]
-    if "pivot_vals" not in st.session_state:
-        st.session_state["pivot_vals"] = [v for v in default_values if v in cols_all]
-    if "pivot_agg" not in st.session_state:
-        st.session_state["pivot_agg"] = "sum"
-    if "pivot_fill" not in st.session_state:
-        st.session_state["pivot_fill"] = 0.0
+    # Persist pivot state
+    st.session_state.setdefault("pivot_adv", False)
+    st.session_state.setdefault("pivot_rows", default_rows)
+    st.session_state.setdefault("pivot_cols", default_cols)
+    st.session_state.setdefault("pivot_filters", default_filters)
+    st.session_state.setdefault("pivot_vals", default_values)
+    st.session_state.setdefault("pivot_agg", "sum")
+    st.session_state.setdefault("pivot_fill", 0.0)
 
-    with st.expander("Cấu hình Pivot", expanded=True):
+    with st.expander("Pivot configuration", expanded=True):
         c_top = st.columns([1,1,1,1])
         with c_top[0]:
             st.checkbox("Advanced layout", key="pivot_adv",
-                        help="Bật để chỉnh Rows/Columns; tắt để cố định như Excel (GB / Revenue Month).")
+                        help="Enable to change Rows/Columns; disable to keep GB / Month fixed.")
         with c_top[1]:
             st.selectbox("Aggregation", ["sum", "mean", "count"],
                          index=["sum","mean","count"].index(st.session_state["pivot_agg"]),
@@ -618,12 +606,10 @@ else:
             st.number_input("Fill blank with", value=float(st.session_state["pivot_fill"]),
                             step=1.0, key="pivot_fill")
         with c_top[3]:
-            # chỉ chọn Values là mở, Rows/Cols khoá nếu không Advanced
             st.multiselect("Values", options=cols_all,
                            default=st.session_state["pivot_vals"],
                            key="pivot_vals")
 
-        # Rows/Columns (khóa khi không Advanced)
         c_mid = st.columns(2)
         with c_mid[0]:
             st.multiselect("Rows", options=cols_all,
@@ -636,18 +622,17 @@ else:
                            key="pivot_cols",
                            disabled=not st.session_state["pivot_adv"])
 
-        # Filters: giống Excel – chọn cột filter và chọn các giá trị trong mỗi filter
         st.markdown("**Filters**")
         st.multiselect("Filter fields", options=cols_all,
                        default=st.session_state["pivot_filters"],
                        key="pivot_filters")
-        # Render bộ chọn giá trị cho từng filter field
+
+        # Per-filter value pickers (with "(All)")
         filter_value_keys = {}
         for fc in st.session_state["pivot_filters"]:
             uniq_vals = sorted(map(str, merged[fc].dropna().unique().tolist()))
-            # có thêm lựa chọn (All)
             opt = ["(All)"] + uniq_vals
-            key_name = f"flt_vals_{fc}"
+            key_name = f"flt_vals_{keysafe(fc)}"
             filter_value_keys[fc] = key_name
             if key_name not in st.session_state:
                 st.session_state[key_name] = ["(All)"]
@@ -655,17 +640,21 @@ else:
                            default=st.session_state[key_name],
                            key=key_name)
 
-    # Áp dụng filter vào dữ liệu trước khi pivot
+    # Apply filters
     dfp = merged.copy()
     for fc in st.session_state["pivot_filters"]:
         sel = st.session_state.get(filter_value_keys.get(fc, ""), ["(All)"])
         if sel and "(All)" not in sel:
             dfp = dfp[dfp[fc].astype(str).isin(sel)]
-    # Ép thứ tự tháng nếu tháng nằm ở Rows hoặc Columns
-    month_col = ctrl_map["month"]
-    if (month_col in st.session_state["pivot_rows"]) or (month_col in st.session_state["pivot_cols"]):
+
+    # Month ordering (guarded)
+    month_col = ctrl_map.get("month")
+    if month_col and (month_col in dfp.columns) and (
+        month_col in st.session_state.get("pivot_rows", []) or month_col in st.session_state.get("pivot_cols", [])
+    ):
         dfp = ensure_month_order(dfp, month_col)
-    # Build Pivot
+
+    # Build pivot
     try:
         aggfunc = {"sum": np.sum, "mean": np.mean, "count": "count"}[st.session_state["pivot_agg"]]
         pivot_df = pd.pivot_table(
@@ -685,10 +674,9 @@ else:
         st.subheader("Pivot result")
         st.dataframe(pivot_df, use_container_width=True)
 
-        # Tải pivot
+        # Download pivot
         pivot_buf = io.BytesIO()
         with pd.ExcelWriter(pivot_buf, engine="xlsxwriter") as writer:
-            # Xuất thêm phần Filter đang áp dụng vào sheet Notes cho tiện trace
             notes = pd.DataFrame({
                 "Filter Field": st.session_state["pivot_filters"],
                 "Selected": [
@@ -709,7 +697,7 @@ else:
         st.error(f"Pivot error: {e}")
 
 # =========================
-# DOWNLOAD KẾT QUẢ (nếu có)
+# DOWNLOAD RESULT
 # =========================
 if "merged_result" in st.session_state:
     out_buf = io.BytesIO()
@@ -728,7 +716,7 @@ st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown(
     """
     <div style="text-align:center; font-size:13px; color:#666; margin-top:8px;">
-        Crafted with care by the <strong>BGSV/CTG Data Team</strong>.
+        Crafted with care by <strong>BGSV/CTG Data Team</strong>.
     </div>
     """,
     unsafe_allow_html=True,
