@@ -10,8 +10,8 @@ import streamlit as st
 # =========================
 # PAGE CONFIG
 # =========================
-st.set_page_config(page_title="Stimulation - no more pain :))", layout="wide")
-st.title("Stimulation - no more pain :))")
+st.set_page_config(page_title="Simulation - no more pain :))", layout="wide")
+st.title("Simulation - no more pain :))")
 
 # =========================
 # CONSTANTS
