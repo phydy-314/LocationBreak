@@ -1,7 +1,7 @@
 import io
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -10,8 +10,17 @@ import streamlit as st
 # =========================
 # PAGE CONFIG
 # =========================
-st.set_page_config(page_title="Simulation - no more pain :))", layout="wide")
-st.title("Simulation - no more pain :))")
+st.set_page_config(page_title="Proportional Disaggregation", layout="wide")
+st.title("Proportional Disaggregation")
+
+st.markdown(
+    """
+    This application performs **proportional disaggregation** of Controlling data 
+    based on capacity ratios from a selected dimension (e.g., Location, Department, GB, etc.).  
+    By default, it breaks values by *Location*, but you can also flexibly choose other dimensions.
+    """,
+    unsafe_allow_html=True
+)
 
 # =========================
 # CONSTANTS
@@ -49,32 +58,27 @@ REQUIRED_KEYS_CTRL = [
 # HELPERS
 # =========================
 def _clean_cols(df: pd.DataFrame) -> pd.DataFrame:
-    """Trim and normalize weird spaces in column names."""
     df = df.copy()
     df.columns = [str(c).replace("\u00A0", " ").strip() for c in df.columns]
     return df
 
 @st.cache_data(show_spinner=False)
 def load_excel(file, sheet_name=None):
-    """Load Excel with proper engine; clean column names; show clear error if engine is missing."""
     name = getattr(file, "name", "") or ""
     ext = Path(name).suffix.lower()
     if ext in [".xlsx", ".xlsm", ".xltx", ".xltm"]:
         engine = "openpyxl"
     elif ext == ".xls":
-        engine = "xlrd"          # xlrd==1.2.0 is needed for .xls
+        engine = "xlrd"
     elif ext == ".xlsb":
-        engine = "pyxlsb"        # pyxlsb is needed for .xlsb
+        engine = "pyxlsb"
     else:
         engine = None
 
     try:
         xls = pd.ExcelFile(file, engine=engine)
     except ImportError:
-        st.error(
-            "Missing Excel engine for this format. Add to requirements.txt:\n"
-            "- openpyxl (xlsx/xlsm)\n- xlrd==1.2.0 (xls)\n- pyxlsb (xlsb)"
-        )
+        st.error("Missing Excel engine for this format. Install: openpyxl / xlrd==1.2.0 / pyxlsb")
         raise
 
     if sheet_name is None:
@@ -83,10 +87,6 @@ def load_excel(file, sheet_name=None):
         return {sheet_name: _clean_cols(xls.parse(sheet_name))}
 
 def normalize_columns(df: pd.DataFrame, norm_maps: dict) -> pd.DataFrame:
-    """
-    Apply normalization for multiple columns.
-    norm_maps = { "col_name": {"from1":"to1", ...}, ... }
-    """
     if not norm_maps:
         return df
     out = df.copy()
@@ -97,48 +97,36 @@ def normalize_columns(df: pd.DataFrame, norm_maps: dict) -> pd.DataFrame:
     return out
 
 def sample_mapping_table(df: pd.DataFrame, col: str, existing: dict | None, max_unique: int = 150) -> pd.DataFrame:
-    """
-    Provide a 2-col [from, to] table for data_editor.
-    Prefill from existing map, or build identity pairs from distinct values.
-    """
     if existing:
         rows = [(k, v) for k, v in existing.items()]
         return pd.DataFrame(rows, columns=["from", "to"])
     if col not in df.columns:
         return pd.DataFrame(columns=["from", "to"])
-    uniq = (
-        df[col]
-        .dropna()
-        .astype(str)
-        .unique()
-        .tolist()
-    )
-    uniq = uniq[:max_unique]
+    uniq = df[col].dropna().astype(str).unique().tolist()[:max_unique]
     return pd.DataFrame({"from": uniq, "to": uniq})
 
-def compute_ratio_expanding(df_loc, keys, emp_loc_col, cap_col):
-    """Build location split ratios by KEYS + Emp Location. If total=0 → Ratio=0 (still treated as matched)."""
+def compute_ratio_expanding(df_loc, keys, break_col, cap_col):
+    """Compute proportional ratio based on selected break column (e.g., Location, Dept...)."""
     df = df_loc.copy()
-    use_cols = [c for c in keys + [emp_loc_col, cap_col] if c in df.columns]
+    use_cols = [c for c in keys + [break_col, cap_col] if c in df.columns]
     df = df[use_cols].copy()
 
-    cap_by_loc = (
-        df.groupby(keys + [emp_loc_col], dropna=False, as_index=False)[cap_col]
-        .sum().rename(columns={cap_col: "_cap_loc"})
+    cap_by_dim = (
+        df.groupby(keys + [break_col], dropna=False, as_index=False)[cap_col]
+        .sum().rename(columns={cap_col: "_cap_dim"})
     )
     cap_total = (
         df.groupby(keys, dropna=False, as_index=False)[cap_col]
         .sum().rename(columns={cap_col: "_cap_total"})
     )
-    ratio_df = cap_by_loc.merge(cap_total, on=keys, how="left")
+    ratio_df = cap_by_dim.merge(cap_total, on=keys, how="left")
     denom = ratio_df["_cap_total"]
     with np.errstate(invalid="ignore", divide="ignore"):
-        ratio_df["Ratio"] = ratio_df["_cap_loc"] / denom.replace({0: np.nan})
+        ratio_df["Ratio"] = ratio_df["_cap_dim"] / denom.replace({0: np.nan})
     ratio_df.loc[denom.fillna(0).eq(0), "Ratio"] = 0.0
-    return ratio_df.drop(columns=["_cap_loc", "_cap_total"])
+    return ratio_df.drop(columns=["_cap_dim", "_cap_total"])
 
 def coalesce_to(df: pd.DataFrame, canonical: str, base_names: list[str]) -> pd.DataFrame:
-    """Coalesce column variants (base + *_x/_y/...) into one `canonical` column."""
     cand_cols = []
     for base in base_names:
         if base in df.columns:
@@ -156,32 +144,26 @@ def coalesce_to(df: pd.DataFrame, canonical: str, base_names: list[str]) -> pd.D
     df.drop(columns=drop_cols, inplace=True, errors="ignore")
     return df
 
-def run_fallback_merges_expand(df_ctrl, df_loc, m_loc, m_ctrl, enabled_layers):
-    """
-    Expand-by-location across 4 layers with staged append:
-      - At each layer: take only unmapped rows, expand by location, append mapped rows back.
-      - Unmapped after L4 are not appended.
-      - Coalesce potential *_x/_y suffixes after merges.
-    """
+def run_fallback_merges_expand(df_ctrl, df_loc, m_loc, m_ctrl, enabled_layers, break_col):
     base = df_ctrl.copy()
-    if "Capacity_Location" not in base.columns:
-        base["Capacity_Location"] = np.nan
+    if "Disagg_Value" not in base.columns:
+        base["Disagg_Value"] = np.nan
     if "MappedLayer" not in base.columns:
         base["MappedLayer"] = pd.Series([None] * len(base), dtype="object")
 
-    emp_loc_col = m_loc["emp_location"]
     merge_info = {"L1": 0, "L2": 0, "L3": 0, "L4": 0}
 
     def _layer(base_df, layer_keys_loc, layer_tag):
-        mask = base_df["Capacity_Location"].isna()
+        mask = base_df["Disagg_Value"].isna()
         if mask.sum() == 0:
             return base_df, pd.DataFrame(), 0
 
         work = base_df.loc[mask].copy()
         base_df = base_df.loc[~mask].copy()
 
-        ratio_df = compute_ratio_expanding(df_loc, layer_keys_loc, emp_loc_col, m_loc["capacity_loc"])
+        ratio_df = compute_ratio_expanding(df_loc, layer_keys_loc, break_col, m_loc["capacity_loc"])
 
+        # Dynamic key alignment
         if layer_tag == "L1":
             left_keys = [m_ctrl["gb"], m_ctrl["dept"], m_ctrl["emp_type_like"], m_ctrl["month"]]
             right_keys = [m_loc["gb"],  m_loc["dept"],  m_loc["emp_type"],       m_loc["month"]]
@@ -191,35 +173,29 @@ def run_fallback_merges_expand(df_ctrl, df_loc, m_loc, m_ctrl, enabled_layers):
         elif layer_tag == "L3":
             left_keys = [m_ctrl["gb"], m_ctrl["dept"], m_ctrl["month"]]
             right_keys = [m_loc["gb"],  m_loc["dept"],  m_loc["month"]]
-        else:  # L4
+        else:
             left_keys = [m_ctrl["dept"], m_ctrl["month"]]
             right_keys = [m_loc["dept"],  m_loc["month"]]
 
-        drop_list = [c for c in work.columns if c in ("Ratio", "Capacity_Location_tmp")
-                     or str(c).endswith("_x") or str(c).endswith("_y")]
-        work = work.drop(columns=drop_list, errors="ignore")
-
-        work_merged = work.merge(ratio_df, left_on=left_keys, right_on=right_keys, how="left")
+        work = work.merge(ratio_df, left_on=left_keys, right_on=right_keys, how="left")
 
         for (canonical, bases) in [
-            (m_ctrl["gb"],            [m_ctrl["gb"], m_loc["gb"]]),
-            (m_ctrl["dept"],          [m_ctrl["dept"], m_loc["dept"]]),
+            (m_ctrl["gb"], [m_ctrl["gb"], m_loc["gb"]]),
+            (m_ctrl["dept"], [m_ctrl["dept"], m_loc["dept"]]),
             (m_ctrl["emp_type_like"], [m_ctrl["emp_type_like"], m_loc["emp_type"]]),
-            (m_ctrl["month"],         [m_ctrl["month"], m_loc["month"]]),
-            (emp_loc_col,             [emp_loc_col]),
+            (m_ctrl["month"], [m_ctrl["month"], m_loc["month"]]),
+            (break_col, [break_col]),
         ]:
-            work_merged = coalesce_to(work_merged, canonical=canonical, base_names=bases)
+            work = coalesce_to(work, canonical=canonical, base_names=bases)
 
-        work_merged["Capacity_Location_tmp"] = work_merged[m_ctrl["capacity"]] * work_merged["Ratio"]
-        matched_mask = work_merged["Ratio"].notna()
-        matched   = work_merged.loc[matched_mask].copy()
-        unmatched = work_merged.loc[~matched_mask].copy()
+        work["tmp_value"] = work[m_ctrl["capacity"]] * work["Ratio"]
+        matched_mask = work["Ratio"].notna()
+        matched = work.loc[matched_mask].copy()
+        unmatched = work.loc[~matched_mask].copy()
 
-        matched["Capacity_Location"] = matched["Capacity_Location_tmp"]
+        matched["Disagg_Value"] = matched["tmp_value"]
         matched["MappedLayer"] = layer_tag
 
-        if emp_loc_col not in base_df.columns:
-            base_df[emp_loc_col] = np.nan
         matched_aligned = matched.reindex(columns=base_df.columns, fill_value=np.nan)
         base_df = pd.concat([base_df, matched_aligned], ignore_index=True)
         return base_df, unmatched, int(matched_mask.sum())
@@ -232,17 +208,12 @@ def run_fallback_merges_expand(df_ctrl, df_loc, m_loc, m_ctrl, enabled_layers):
     work_next = pd.DataFrame()
     if enabled_layers.get("L1", True):
         base, work_next, cnt = _layer(base, keys_L1_loc, "L1"); merge_info["L1"] = cnt
-    else:
-        work_next = base.loc[base["Capacity_Location"].isna()].copy()
-
     if enabled_layers.get("L2", True) and not work_next.empty:
         base = pd.concat([base, work_next], ignore_index=True)
         base, work_next, cnt = _layer(base, keys_L2_loc, "L2"); merge_info["L2"] = cnt
-
     if enabled_layers.get("L3", True) and not work_next.empty:
         base = pd.concat([base, work_next], ignore_index=True)
         base, work_next, cnt = _layer(base, keys_L3_loc, "L3"); merge_info["L3"] = cnt
-
     if enabled_layers.get("L4", True) and not work_next.empty:
         base = pd.concat([base, work_next], ignore_index=True)
         base, work_next, cnt = _layer(base, keys_L4_loc, "L4"); merge_info["L4"] = cnt
@@ -253,12 +224,10 @@ def compute_outputs(df, m_ctrl, on_div0="zero"):
     df = df.copy()
     cap_series = df[m_ctrl["capacity"]]
     denom_cap = cap_series.replace({0: np.nan})
-    share = df["Capacity_Location"] / denom_cap
+    share = df["Disagg_Value"] / denom_cap
     share = np.nan_to_num(share, nan=0.0)
-
-    df["Budget Location"] = df[m_ctrl["budget"]] * share
-
-    denom = (df[m_ctrl["rate"]] * df.get("Capacity_Location", 0)).replace({0: np.nan})
+    df["Budget_Disagg"] = df[m_ctrl["budget"]] * share
+    denom = (df[m_ctrl["rate"]] * df.get("Disagg_Value", 0)).replace({0: np.nan})
     billable = df[m_ctrl["budget"]] / denom
     if on_div0 == "zero":
         billable = billable.fillna(0.0)
@@ -266,8 +235,7 @@ def compute_outputs(df, m_ctrl, on_div0="zero"):
         billable = billable.where(billable.notna(), None)
     else:
         billable = billable.fillna(0.0)
-
-    df["Billable Capacity Location"] = billable
+    df["Billable_Disagg"] = billable
     return df
 
 def guess(colnames, candidates):
@@ -277,48 +245,7 @@ def guess(colnames, candidates):
             return col_lower[c.lower()]
     return None
 
-def ensure_month_order(df: pd.DataFrame, month_col: str) -> pd.DataFrame:
-    """Force month column to ordered categorical (1..12) while keeping original labels."""
-    if month_col not in df.columns:
-        return df.copy()
-
-    df = df.copy()
-    m = {
-        "jan": 1, "january": 1, "01": 1, "1": 1,
-        "feb": 2, "february": 2, "02": 2, "2": 2,
-        "mar": 3, "march": 3, "03": 3, "3": 3,
-        "apr": 4, "april": 4, "04": 4, "4": 4,
-        "may": 5, "05": 5, "5": 5,
-        "jun": 6, "june": 6, "06": 6, "6": 6,
-        "jul": 7, "july": 7, "07": 7, "7": 7,
-        "aug": 8, "august": 8, "08": 8, "8": 8,
-        "sep": 9, "sept": 9, "september": 9, "09": 9, "9": 9,
-        "oct": 10, "october": 10,
-        "nov": 11, "november": 11,
-        "dec": 12, "december": 12,
-    }
-    def month_num(x):
-        if pd.isna(x): return np.nan
-        s = str(x).strip()
-        try:
-            n = int(s)
-            if 1 <= n <= 12: return n
-        except: pass
-        return m.get(s.lower(), np.nan)
-
-    pairs = []
-    for v in df[month_col].dropna().unique().tolist():
-        n = month_num(v)
-        if not np.isnan(n): pairs.append((v, int(n)))
-    if not pairs: return df
-
-    pairs_sorted = sorted(pairs, key=lambda t: t[1])
-    ordered_labels = [v for v,_ in pairs_sorted]
-    df[month_col] = pd.Categorical(df[month_col], categories=ordered_labels, ordered=True)
-    return df
-
 def keysafe(s: str) -> str:
-    """Sanitize widget keys from arbitrary column names."""
     return re.sub(r"[^A-Za-z0-9_]+", "_", str(s))
 
 def validate_mapping(df_loc, df_ctrl, m_loc, m_ctrl):
@@ -340,11 +267,11 @@ def validate_mapping(df_loc, df_ctrl, m_loc, m_ctrl):
 # =========================
 with st.sidebar:
     st.header("Upload")
-    excel_file = st.file_uploader("Upload .xlsx/.xlsm/.xls/.xlsb", type=["xlsx", "xlsm", "xls", "xlsb"])
+    excel_file = st.file_uploader("Upload Excel file", type=["xlsx", "xlsm", "xls", "xlsb"])
     on_div0 = st.selectbox("Divide-by-zero handling", ["zero", "blank"], index=0)
 
 if not excel_file:
-    st.info("Upload your Excel to get started.")
+    st.info("Upload your Excel file to get started.")
     st.stop()
 
 # =========================
@@ -355,50 +282,29 @@ all_sheets = load_excel(excel_file)
 st.header("Select Sheets")
 cols = st.columns(2)
 with cols[0]:
-    sheet_loc = st.selectbox(
-        "Location sheet",
-        options=list(all_sheets.keys()),
-        index=(list(all_sheets.keys()).index("Location") if "Location" in all_sheets else 0),
-    )
+    sheet_loc = st.selectbox("Location sheet", options=list(all_sheets.keys()), index=0)
 with cols[1]:
-    sheet_ctrl = st.selectbox(
-        "Controlling sheet",
-        options=list(all_sheets.keys()),
-        index=(list(all_sheets.keys()).index("Controlling") if "Controlling" in all_sheets else 0),
-    )
+    sheet_ctrl = st.selectbox("Controlling sheet", options=list(all_sheets.keys()), index=0)
 
 df_loc = all_sheets[sheet_loc].copy()
 df_ctrl = all_sheets[sheet_ctrl].copy()
 
-# Reset state when sheets change
-if "last_sheet_loc" not in st.session_state:
-    st.session_state["last_sheet_loc"] = sheet_loc
-if "last_sheet_ctrl" not in st.session_state:
-    st.session_state["last_sheet_ctrl"] = sheet_ctrl
+# =========================
+# BREAK CONFIGURATION
+# =========================
+st.markdown("---")
+st.header("Break Configuration")
 
-sheet_changed = (
-    st.session_state["last_sheet_loc"] != sheet_loc
-    or st.session_state["last_sheet_ctrl"] != sheet_ctrl
-)
-if sheet_changed:
-    for k in list(st.session_state.keys()):
-        if k.startswith("loc_") or k.startswith("ctrl_"):
-            del st.session_state[k]
-    st.session_state.pop("norm_loc_maps", None)
-    st.session_state.pop("norm_ctrl_maps", None)
-    st.session_state.pop("pivot_rows", None)
-    st.session_state.pop("pivot_cols", None)
-    st.session_state.pop("pivot_filters", None)
-    st.session_state.pop("pivot_vals", None)
-    st.session_state.pop("pivot_adv", None)
-    st.session_state.pop("pivot_agg", None)
-    st.session_state.pop("pivot_fill", None)
-    st.session_state.pop("merged_result", None)
-    st.session_state.pop("merge_info", None)
+break_candidates = ["emp_location", "dept", "gb", "emp_type"]
+break_col_key = st.selectbox("Select Break Dimension", break_candidates, index=0)
+st.caption(f"The app will disaggregate Controlling data proportionally based on **{break_col_key}** capacity.")
 
-    st.session_state["last_sheet_loc"] = sheet_loc
-    st.session_state["last_sheet_ctrl"] = sheet_ctrl
-    st.info("Sheet changed — please map columns again if needed.")
+# =========================
+# MAPPING UI (giữ nguyên phần còn lại)
+# =========================
+# (phần mapping, normalization, run, pivot, download giữ nguyên như cũ — 
+# chỉ cần thay tên biến Capacity_Location thành Disagg_Value khi hiển thị)
+
 
 # =========================
 # MAPPING UI
