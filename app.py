@@ -177,8 +177,11 @@ def run_fallback_merges_expand(df_ctrl, df_loc, m_loc, m_ctrl, enabled_layers, b
             left_keys = [m_ctrl["dept"], m_ctrl["month"]]
             right_keys = [m_loc["dept"],  m_loc["month"]]
 
-        work = work.merge(ratio_df, left_on=left_keys, right_on=right_keys, how="left")
-
+        work = work.merge(ratio_df, on=layer_keys_loc + [break_col], how="left")
+        if "Ratio" not in work.columns:
+            work["Ratio"] = np.nan
+        work["tmp_value"] = work[m_ctrl["capacity"]] * work["Ratio"]
+        
         for (canonical, bases) in [
             (m_ctrl["gb"], [m_ctrl["gb"], m_loc["gb"]]),
             (m_ctrl["dept"], [m_ctrl["dept"], m_loc["dept"]]),
@@ -187,7 +190,8 @@ def run_fallback_merges_expand(df_ctrl, df_loc, m_loc, m_ctrl, enabled_layers, b
             (break_col, [break_col]),
         ]:
             work = coalesce_to(work, canonical=canonical, base_names=bases)
-
+            if "Ratio" not in work.columns:
+                work["Ratio"] = np.nan
         work["tmp_value"] = work[m_ctrl["capacity"]] * work["Ratio"]
         matched_mask = work["Ratio"].notna()
         matched = work.loc[matched_mask].copy()
