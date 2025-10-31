@@ -295,16 +295,20 @@ df_ctrl = all_sheets[sheet_ctrl].copy()
 st.markdown("---")
 st.header("Break Configuration")
 
-break_candidates = ["emp_location", "dept", "gb", "emp_type"]
-break_col_key = st.selectbox("Select Break Dimension", break_candidates, index=0)
+loc_cols = list(df_loc.columns)
+ctrl_cols = list(df_ctrl.columns)
+
+# Gợi ý chỉ những cột xuất hiện trong Location dataset
+break_candidates = [c for c in loc_cols if c in ctrl_cols or True]
+
+break_col_key = st.selectbox(
+    "Select Break Dimension",
+    options=break_candidates,
+    index=0 if break_candidates else None,
+    help="Choose a column from your dataset to disaggregate by (e.g., Emp Location, Dept, GB).",
+)
+
 st.caption(f"The app will disaggregate Controlling data proportionally based on **{break_col_key}** capacity.")
-
-# =========================
-# MAPPING UI (giữ nguyên phần còn lại)
-# =========================
-# (phần mapping, normalization, run, pivot, download giữ nguyên như cũ — 
-# chỉ cần thay tên biến Capacity_Location thành Disagg_Value khi hiển thị)
-
 
 # =========================
 # MAPPING UI
