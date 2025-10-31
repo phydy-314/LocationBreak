@@ -456,7 +456,7 @@ if run:
         loc = normalize_columns(loc, st.session_state.get("norm_loc_maps", {}))
         ctrl = normalize_columns(ctrl, st.session_state.get("norm_ctrl_maps", {}))
 
-    merged, info = run_fallback_merges_expand(ctrl, loc, loc_map, ctrl_map, enabled_layers)
+    merged, info = run_fallback_merges_expand(ctrl, loc, loc_map, ctrl_map, enabled_layers, break_col_key)
     merged = compute_outputs(merged, ctrl_map, on_div0=on_div0)
 
     st.session_state["merged_result"] = merged
