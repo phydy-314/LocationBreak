@@ -106,40 +106,50 @@ def sample_mapping_table(df: pd.DataFrame, col: str, existing: dict | None, max_
     return pd.DataFrame({"from": uniq, "to": uniq})
 
 def compute_ratio_expanding(df_loc, keys, break_col, cap_col):
-    """Compute proportional ratio based on selected break column (e.g., Location, Dept...)."""
-
+    """
+    Compute proportional ratio based on selected break column (e.g., Location, Dept...).
+    - Loại cột trùng tên (tránh groupby 2-D).
+    - Nếu break_col đã nằm trong keys thì không group lặp lại.
+    - Mẫu số (total) = group theo keys KHÔNG gồm break_col.
+    """
     df = df_loc.copy()
+    df = df.loc[:, ~df.columns.duplicated()].copy()  # chống "not 1-dimensional"
 
-    df = df.loc[:, ~df.columns.duplicated()].copy()
+    missing_cols = [c for c in [break_col, cap_col] if c not in df.columns]
+    if missing_cols:
+        raise ValueError(
+            f"Columns missing in Location sheet: {missing_cols}. "
+            f"Available: {df.columns.tolist()}"
+        )
 
-    # st.write("DEBUG columns:", df.columns.tolist())
-    # st.write("Duplicate columns:", df.columns[df.columns.duplicated()].tolist())
+    keys = [k for k in keys if k in df.columns]
+    # Duy trì thứ tự, loại trùng
+    keys_uniq = list(dict.fromkeys(keys))
 
-    if break_col not in df.columns:
-        raise ValueError(f"Break column '{break_col}' not found in Location sheet. Available: {df.columns.tolist()}")
+    keys_total = [k for k in keys_uniq if k != break_col]  # mẫu số KHÔNG bao gồm break_col
+    keys_dim = keys_total + [break_col]                    # tử số gồm break_col đúng 1 lần
 
-    use_cols = [c for c in keys + [break_col, cap_col] if c in df.columns]
+    use_cols = list(dict.fromkeys(keys_dim + [cap_col]))   # loại trùng, giữ thứ tự
     df = df[use_cols].copy()
 
     cap_by_dim = (
-        df.groupby(keys + [break_col], dropna=False, as_index=False)[cap_col]
+        df.groupby(keys_dim, dropna=False, as_index=False)[cap_col]
         .sum()
         .rename(columns={cap_col: "_cap_dim"})
     )
-
     cap_total = (
-        df.groupby(keys, dropna=False, as_index=False)[cap_col]
+        df.groupby(keys_total, dropna=False, as_index=False)[cap_col]
         .sum()
         .rename(columns={cap_col: "_cap_total"})
     )
 
-    ratio_df = cap_by_dim.merge(cap_total, on=keys, how="left")
+    ratio_df = cap_by_dim.merge(cap_total, on=keys_total, how="left")
     denom = ratio_df["_cap_total"]
 
     with np.errstate(invalid="ignore", divide="ignore"):
         ratio_df["Ratio"] = ratio_df["_cap_dim"] / denom.replace({0: np.nan})
-
     ratio_df.loc[denom.fillna(0).eq(0), "Ratio"] = 0.0
+
     return ratio_df.drop(columns=["_cap_dim", "_cap_total"])
 
 
