@@ -417,6 +417,107 @@ if st.button("Run processing", type="primary"):
 
     st.session_state["merged_result"] = result_all
     st.success(f"Processing completed with {len(layers)} layers applied.")
+    
+# =========================
+# GAP CHECK (Pivot Comparison)
+# =========================
+st.markdown("---")
+st.header("Gap Validation: Compare with Original Controlling Data")
+
+if "merged_result" not in st.session_state:
+    st.info("No disaggregated result found. Please run processing first.")
+else:
+    merged = st.session_state["merged_result"]
+    st.markdown(
+        """
+        This section compares aggregated **Disaggregated Result** against the 
+        **original Controlling file**.  
+        Ideally, all gaps (differences) should be `0`.
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # User chooses pivot config for comparison
+    with st.expander("Gap Pivot Configuration", expanded=False):
+        st.caption("Select consistent grouping for both datasets")
+        ctrl_cols = list(df_ctrl.columns)
+        merged_cols = list(merged.columns)
+
+        # Common grouping suggestion
+        common_group = [
+            c for c in ["GB", "Dept", "Emp Type", "Month"]
+            if c in ctrl_cols or c in merged_cols
+        ]
+
+        group_by = st.multiselect(
+            "Group by columns",
+            options=list(set(ctrl_cols + merged_cols)),
+            default=common_group,
+            key="gap_group_cols"
+        )
+
+        value_field_ctrl = st.selectbox(
+            "Controlling value field",
+            options=[c for c in ctrl_cols if pd.api.types.is_numeric_dtype(df_ctrl[c])],
+            key="gap_val_ctrl"
+        )
+
+        value_field_disagg = st.selectbox(
+            "Disaggregated value field",
+            options=[c for c in merged_cols if pd.api.types.is_numeric_dtype(merged[c])],
+            key="gap_val_disagg"
+        )
+
+    # --- Compute pivots ---
+    try:
+        pivot_ctrl = (
+            df_ctrl.groupby(group_by, dropna=False)[value_field_ctrl]
+            .sum()
+            .reset_index()
+            .rename(columns={value_field_ctrl: "Ctrl_Total"})
+        )
+
+        pivot_disagg = (
+            merged.groupby(group_by, dropna=False)[value_field_disagg]
+            .sum()
+            .reset_index()
+            .rename(columns={value_field_disagg: "Disagg_Total"})
+        )
+
+        # Join two pivots
+        gap_df = pd.merge(
+            pivot_ctrl,
+            pivot_disagg,
+            on=group_by,
+            how="outer"
+        )
+
+        # Compute gap
+        gap_df["Gap"] = gap_df["Disagg_Total"].fillna(0) - gap_df["Ctrl_Total"].fillna(0)
+
+        # Display
+        all_zero = np.allclose(gap_df["Gap"].fillna(0), 0, atol=1e-6)
+
+        if all_zero:
+            st.success("All values matched perfectly! (Gap = 0 across all groups)")
+        else:
+            st.warning("Some mismatches found — please review below")
+
+        st.dataframe(gap_df, use_container_width=True)
+
+        # Download as Excel
+        out_buf = io.BytesIO()
+        with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
+            gap_df.to_excel(writer, sheet_name="Gap_Check", index=False)
+        st.download_button(
+            "Download Gap Report (Excel)",
+            data=out_buf.getvalue(),
+            file_name="gap_check.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    except Exception as e:
+        st.error(f"Gap check error: {e}")
 
 # =========================
 # RESULTS + PIVOT
