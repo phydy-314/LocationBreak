@@ -432,20 +432,69 @@ if st.button("Run processing", type="primary"):
         loc_norm = normalize_columns(df_loc, st.session_state.get("norm_loc_maps", {}))
         ctrl_norm = normalize_columns(df_ctrl, st.session_state.get("norm_ctrl_maps", {}))
 
-        result = run_disagg_layers(
-            df_ctrl=ctrl_norm,
-            df_loc=loc_norm,
-            join_pairs=valid_pairs,
-            layer_sizes=layer_sizes,
-            loc_break_col=loc_break_col,
-            loc_capacity_col=loc_capacity_col,
-            ctrl_capacity_col=ctrl_capacity_col,
-            ctrl_budget_col=ctrl_budget_col,
-            ctrl_rate_col=ctrl_rate_col,
-        )
+        # --- Extract layer info ---
+        layer_config = st.session_state.get("layers", [])
+        if not layer_config:
+            st.error("Please define at least one Layer before running.")
+            st.stop()
+
+        # --- Run layer-by-layer disaggregation ---
+        merged_chunks = []
+        remaining_ctrl = ctrl_norm.copy()
+
+        for idx, layer in enumerate(layer_config, start=1):
+            cols = [c for c in layer["cols"] if c]
+            if not cols:
+                continue
+
+            st.write(f"Running Layer {idx} with {len(cols)} columns: {cols}")
+
+            # Compute ratio by these columns + break column
+            ratio_df = compute_ratio_generic(
+                df_loc=loc_norm,
+                keys=cols,
+                break_col=loc_break_col,
+                cap_col=loc_capacity_col,
+            )
+
+            # Merge & compute disagg
+            merged = remaining_ctrl.merge(
+                ratio_df,
+                how="left",
+                left_on=cols,
+                right_on=cols,
+                suffixes=("", "_r"),
+            )
+
+            # Base disaggregation
+            merged["Disagg_Value"] = merged[ctrl_capacity_col] * merged["Ratio"].fillna(0)
+            share = np.where(
+                merged[ctrl_capacity_col] == 0, 0, merged["Disagg_Value"] / merged[ctrl_capacity_col]
+            )
+            merged["Budget_Disagg"] = merged[ctrl_budget_col] * share
+            denom = (merged[ctrl_rate_col] * merged["Disagg_Value"]).replace({0: np.nan})
+            merged["Billable_Disagg"] = np.where(
+                merged["Disagg_Value"].eq(0), 0, merged[ctrl_budget_col] / denom
+            )
+
+            # Rows matched in this layer (Ratio not null)
+            matched = merged["Ratio"].notna()
+            merged_chunks.append(merged.loc[matched])
+            remaining_ctrl = merged.loc[~matched].drop(columns=["Ratio"], errors="ignore")
+
+        # Combine all results
+        if merged_chunks:
+            result = pd.concat(merged_chunks + [remaining_ctrl], ignore_index=True)
+        else:
+            result = ctrl_norm.copy()
+
+        result["Disagg_Value"] = result.get("Disagg_Value", 0).fillna(0)
+        result["Budget_Disagg"] = result.get("Budget_Disagg", 0).fillna(0)
+        result["Billable_Disagg"] = result.get("Billable_Disagg", 0).fillna(0)
 
         st.session_state["merged_result"] = result
         st.success("Processing completed successfully!")
+
     except Exception as e:
         st.error(f"Run error: {e}")
 
