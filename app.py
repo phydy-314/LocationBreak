@@ -202,55 +202,106 @@ if "merged_result" in st.session_state:
     st.dataframe(df.head(50), use_container_width=True)
 
 # =========================
-# PIVOT TABLE (Excel-like)
+# PIVOT TABLE (Excel-style)
 # =========================
 st.markdown("---")
-st.header("Pivot Table")
+st.header("Pivot Table (Excel-like)")
 
 if "merged_result" not in st.session_state:
-    st.info("Run processing first.")
+    st.info("No data to pivot. Click **Run processing** first.")
 else:
-    df = st.session_state["merged_result"]
-    cols_all = df.columns.tolist()
+    merged = st.session_state["merged_result"]
+    cols_all = list(merged.columns)
 
-    st.session_state.setdefault("pivot_rows", [ctrl_map.get("gb")])
-    st.session_state.setdefault("pivot_cols", [ctrl_map.get("month")])
-    st.session_state.setdefault("pivot_vals", ["Disagg_Value"])
-    st.session_state.setdefault("pivot_filters", [ctrl_map.get("dept")])
+    # Default fields (auto-detected if exist)
+    default_rows = [c for c in [ctrl_map.get("gb")] if c in cols_all]
+    default_cols = [c for c in [ctrl_map.get("month")] if c in cols_all]
+    default_filters = [c for c in [ctrl_map.get("dept"), ctrl_map.get("emp_type_like")] if c in cols_all]
+    default_values = [v for v in ["Disagg_Value", "Budget_Disagg"] if v in cols_all]
+
+    st.session_state.setdefault("pivot_rows", default_rows)
+    st.session_state.setdefault("pivot_cols", default_cols)
+    st.session_state.setdefault("pivot_filters", default_filters)
+    st.session_state.setdefault("pivot_vals", default_values)
     st.session_state.setdefault("pivot_agg", "sum")
 
     with st.expander("Pivot configuration", expanded=True):
-        agg = st.selectbox("Aggregation", ["sum", "mean", "count"], index=["sum","mean","count"].index(st.session_state["pivot_agg"]))
-        rows = st.multiselect("Rows", cols_all, default=st.session_state["pivot_rows"])
-        cols = st.multiselect("Columns", cols_all, default=st.session_state["pivot_cols"])
-        vals = st.multiselect("Values", cols_all, default=st.session_state["pivot_vals"])
-        flt = st.multiselect("Filters", cols_all, default=st.session_state["pivot_filters"])
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            st.selectbox("Aggregation", ["sum", "mean", "count"],
+                         index=["sum","mean","count"].index(st.session_state["pivot_agg"]),
+                         key="pivot_agg")
+        with c2:
+            st.number_input("Fill empty cells with", value=0.0, step=1.0, key="pivot_fill")
 
-        # filter value pickers
-        flt_vals = {}
-        for fc in flt:
-            uniq = sorted(map(str, df[fc].dropna().unique().tolist()))
-            opts = ["(All)"] + uniq
-            sel = st.multiselect(f"{fc} values", opts, default=["(All)"])
-            if "(All)" not in sel:
-                df = df[df[fc].astype(str).isin(sel)]
-            flt_vals[fc] = sel
+        c3, c4 = st.columns(2)
+        with c3:
+            st.multiselect("Rows", options=cols_all,
+                           default=st.session_state["pivot_rows"],
+                           key="pivot_rows")
+        with c4:
+            st.multiselect("Columns", options=cols_all,
+                           default=st.session_state["pivot_cols"],
+                           key="pivot_cols")
 
-    # build pivot
-    aggfunc = {"sum": np.sum, "mean": np.mean, "count": "count"}[agg]
-    pivot_df = pd.pivot_table(df, index=rows or None, columns=cols or None, values=vals or None,
-                              aggfunc=aggfunc, fill_value=0, dropna=False)
-    pivot_df = pivot_df.reset_index()
-    if isinstance(pivot_df.columns, pd.MultiIndex):
-        pivot_df.columns = [" | ".join([str(x) for x in tup if x != ""]) for tup in pivot_df.columns.values]
+        st.markdown("**Filters**")
+        st.multiselect("Filter fields", options=cols_all,
+                       default=st.session_state["pivot_filters"],
+                       key="pivot_filters")
 
-    st.dataframe(pivot_df, use_container_width=True)
+        # Per-filter selectors (with "(All)")
+        filter_value_keys = {}
+        for fc in st.session_state["pivot_filters"]:
+            uniq_vals = sorted(map(str, merged[fc].dropna().unique().tolist()))
+            opt = ["(All)"] + uniq_vals
+            key_name = f"flt_vals_{re.sub(r'[^A-Za-z0-9_]', '_', fc)}"
+            filter_value_keys[fc] = key_name
+            if key_name not in st.session_state:
+                st.session_state[key_name] = ["(All)"]
+            st.multiselect(f"{fc} values", options=opt,
+                           default=st.session_state[key_name],
+                           key=key_name)
 
-    # download
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-        pivot_df.to_excel(w, sheet_name="Pivot", index=False)
-    st.download_button("Download Pivot Excel", data=buf.getvalue(), file_name="pivot_result.xlsx")
+    # Apply filters
+    dfp = merged.copy()
+    for fc in st.session_state["pivot_filters"]:
+        sel = st.session_state.get(filter_value_keys.get(fc, ""), ["(All)"])
+        if sel and "(All)" not in sel:
+            dfp = dfp[dfp[fc].astype(str).isin(sel)]
+
+    # Build pivot
+    try:
+        aggfunc = {"sum": np.sum, "mean": np.mean, "count": "count"}[st.session_state["pivot_agg"]]
+        pivot_df = pd.pivot_table(
+            dfp,
+            index=st.session_state["pivot_rows"] or None,
+            columns=st.session_state["pivot_cols"] or None,
+            values=st.session_state["pivot_vals"] or None,
+            aggfunc=aggfunc,
+            fill_value=st.session_state["pivot_fill"],
+            dropna=False,
+        ).reset_index()
+
+        if isinstance(pivot_df.columns, pd.MultiIndex):
+            pivot_df.columns = [" | ".join([str(x) for x in tup if x != ""]) for tup in pivot_df.columns.values]
+
+        st.subheader("Pivot Result")
+        st.dataframe(pivot_df, use_container_width=True)
+
+        # Download pivot result
+        pivot_buf = io.BytesIO()
+        with pd.ExcelWriter(pivot_buf, engine="xlsxwriter") as writer:
+            pivot_df.to_excel(writer, sheet_name="Pivot", index=False)
+        st.download_button(
+            "Download Pivot (Excel)",
+            data=pivot_buf.getvalue(),
+            file_name="pivot_result.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    except Exception as e:
+        st.error(f"Pivot error: {e}")
+
 
 # --- footer
 st.markdown("<hr>", unsafe_allow_html=True)
