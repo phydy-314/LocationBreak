@@ -182,46 +182,83 @@ st.caption(f"→ The disaggregation will be computed based on **{break_col_key}*
 
 
 # =========================
-# COLUMN MAPPING
+# FLEXIBLE COLUMN MAPPING
 # =========================
 st.markdown("---")
 st.header("Map Columns")
 
-loc_map, ctrl_map = {}, {}
+st.caption("Define how Location and Controlling datasets align.")
 
-loc_candidates = {
-    "gb": ["GB"],
-    "dept": ["Resource Dept", "Dept", "Department"],
-    "emp_type": ["Emp Type", "Header Service", "Service"],
-    "month": ["Month", "Revenue Month"],
-    "emp_location": ["Emp Location", "Dim Location", "Location"],
-    "capacity_loc": ["Capacity_Location", "Capacity Location", "Cap Location"],
-}
-ctrl_candidates = {
-    "gb": ["GB"],
-    "dept": ["Resource Dept", "Dept", "Department"],
-    "emp_type_like": ["Header Service", "Emp Type", "Service"],
-    "month": ["Revenue Month", "Month"],
-    "capacity": ["Capacity"],
-    "budget": ["Budget"],
-    "rate": ["Rate", "Selling Rate"],
-}
+# --- JOIN KEYS SECTION ---
+st.subheader("Join Key Mappings")
 
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("Location columns")
-    for key in REQUIRED_KEYS_LOCATION:
-        opts = [None] + list(df_loc.columns)
-        g = guess(df_loc.columns, loc_candidates.get(key, []))
-        idx = opts.index(g) if g in opts else 0
-        loc_map[key] = st.selectbox(f"{key}", options=opts, index=idx, key=f"loc_{key}")
-with c2:
-    st.subheader("Controlling columns")
-    for key in REQUIRED_KEYS_CTRL:
-        opts = [None] + list(df_ctrl.columns)
-        g = guess(df_ctrl.columns, ctrl_candidates.get(key, []))
-        idx = opts.index(g) if g in opts else 0
-        ctrl_map[key] = st.selectbox(f"{key}", options=opts, index=idx, key=f"ctrl_{key}")
+# Lưu cấu hình trong session_state để giữ khi rerun
+st.session_state.setdefault("join_mappings", [{"loc": None, "ctrl": None}])
+
+join_maps = st.session_state["join_mappings"]
+
+# Vẽ danh sách các cặp mapping
+for i, pair in enumerate(join_maps):
+    c1, c2, c3 = st.columns([3, 3, 1])
+    with c1:
+        join_maps[i]["loc"] = st.selectbox(
+            f"Location column {i+1}",
+            options=[None] + list(df_loc.columns),
+            index=0 if pair["loc"] is None else [None] + list(df_loc.columns).index(pair["loc"]) + 1,
+            key=f"join_loc_{i}"
+        )
+    with c2:
+        join_maps[i]["ctrl"] = st.selectbox(
+            f"Controlling column {i+1}",
+            options=[None] + list(df_ctrl.columns),
+            index=0 if pair["ctrl"] is None else [None] + list(df_ctrl.columns).index(pair["ctrl"]) + 1,
+            key=f"join_ctrl_{i}"
+        )
+    with c3:
+        if st.button("❌", key=f"remove_map_{i}"):
+            join_maps.pop(i)
+            st.experimental_rerun()
+
+# Thêm nút thêm cặp mới
+if st.button("➕ Add another mapping"):
+    join_maps.append({"loc": None, "ctrl": None})
+    st.experimental_rerun()
+
+st.session_state["join_mappings"] = join_maps
+
+
+# --- SUPPORTING FIELDS SECTION ---
+st.subheader("Supporting Fields (non-join columns)")
+
+# Cột hỗ trợ ở Location
+with st.expander("Location dataset"):
+    support_loc = st.multiselect(
+        "Select supporting columns (e.g. capacity, location, etc.)",
+        options=list(df_loc.columns),
+        default=[c for c in df_loc.columns if "capacity" in c.lower() or "location" in c.lower()],
+        key="support_loc_cols"
+    )
+
+# Cột hỗ trợ ở Controlling
+with st.expander("Controlling dataset"):
+    support_ctrl = st.multiselect(
+        "Select supporting columns (e.g. budget, rate, capacity, etc.)",
+        options=list(df_ctrl.columns),
+        default=[c for c in df_ctrl.columns if any(k in c.lower() for k in ["budget", "rate", "capacity"])],
+        key="support_ctrl_cols"
+    )
+
+# Gộp lại thành mapping dictionary
+loc_map = {"join_keys": [j["loc"] for j in join_maps if j["loc"]], "supporting": support_loc}
+ctrl_map = {"join_keys": [j["ctrl"] for j in join_maps if j["ctrl"]], "supporting": support_ctrl}
+
+st.session_state["loc_map"] = loc_map
+st.session_state["ctrl_map"] = ctrl_map
+
+# Hiển thị preview
+st.markdown("**Current join pairs:**")
+st.table(pd.DataFrame(join_maps))
+
 
 # =========================
 # NORMALIZATION
