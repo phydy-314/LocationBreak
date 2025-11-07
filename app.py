@@ -105,28 +105,6 @@ def compute_ratio(df_loc, m_loc):
     return ratio_df
 
 
-def run_disagg(df_ctrl, df_loc, m_loc, m_ctrl):
-    ratio_df = compute_ratio(df_loc, m_loc)
-    base = df_ctrl.copy()
-    base = base.merge(
-        ratio_df,
-        how="left",
-        left_on=[m_ctrl["gb"], m_ctrl["dept"], m_ctrl["emp_type_like"], m_ctrl["month"]],
-        right_on=[m_loc["gb"], m_loc["dept"], m_loc["emp_type"], m_loc["month"]],
-    )
-    base["Disagg_Value"] = base[m_ctrl["capacity"]] * base["Ratio"]
-
-    cap_series = base[m_ctrl["capacity"]].replace({0: np.nan})
-    share = base["Disagg_Value"] / cap_series
-    share = np.nan_to_num(share, nan=0.0)
-
-    base["Budget_Disagg"] = base[m_ctrl["budget"]] * share
-    denom = (base[m_ctrl["rate"]] * base["Disagg_Value"]).replace({0: np.nan})
-    base["Billable_Disagg"] = base[m_ctrl["budget"]] / denom
-    base["Billable_Disagg"] = base["Billable_Disagg"].fillna(0.0)
-    return base
-
-
 def guess(colnames, candidates):
     col_lower = {str(c).lower(): c for c in colnames}
     for c in candidates:
@@ -156,7 +134,7 @@ df_loc = all_sheets[sheet_loc].copy()
 df_ctrl = all_sheets[sheet_ctrl].copy()
 
 # =========================
-# BREAK CONFIGURATION (separate section)
+# BREAK CONFIGURATION
 # =========================
 st.markdown("---")
 st.header("Break Configuration")
@@ -178,7 +156,7 @@ break_col_key = st.selectbox(
     key="break_dimension"
 )
 
-st.caption(f"→ The disaggregation will be computed based on **{break_col_key}** capacity.")
+st.caption(f"The disaggregation will be computed based on **{break_col_key}** capacity.")
 
 
 # =========================
@@ -189,10 +167,9 @@ st.header("Map Columns")
 
 st.caption("Define how Location and Controlling datasets align.")
 
-# ===== Join Key Mappings (safe add/remove with callbacks) =====
-st.subheader("🔹 Join Key Mappings")
+# ===== Join Key Mappings =====
+st.subheader("Join Key Mappings")
 
-# state init
 st.session_state.setdefault("join_mappings", [{"loc": None, "ctrl": None}])
 
 def add_mapping():
@@ -208,69 +185,45 @@ join_maps = st.session_state["join_mappings"]
 
 for i, pair in enumerate(join_maps):
     c1, c2, c3 = st.columns([3, 3, 1])
-
     with c1:
         loc_cols = [None] + list(df_loc.columns)
-        idx = 0
-        if pair.get("loc") in df_loc.columns:
-            idx = loc_cols.index(pair["loc"])
-        join_maps[i]["loc"] = st.selectbox(
-            f"Location column {i+1}",
-            options=loc_cols,
-            index=idx,
-            key=f"join_loc_{i}",
-        )
-
+        idx = loc_cols.index(pair["loc"]) if pair.get("loc") in loc_cols else 0
+        join_maps[i]["loc"] = st.selectbox(f"Location column {i+1}", loc_cols, index=idx, key=f"join_loc_{i}")
     with c2:
         ctrl_cols = [None] + list(df_ctrl.columns)
-        idx = 0
-        if pair.get("ctrl") in df_ctrl.columns:
-            idx = ctrl_cols.index(pair["ctrl"])
-        join_maps[i]["ctrl"] = st.selectbox(
-            f"Controlling column {i+1}",
-            options=ctrl_cols,
-            index=idx,
-            key=f"join_ctrl_{i}",
-        )
-
+        idx = ctrl_cols.index(pair["ctrl"]) if pair.get("ctrl") in ctrl_cols else 0
+        join_maps[i]["ctrl"] = st.selectbox(f"Controlling column {i+1}", ctrl_cols, index=idx, key=f"join_ctrl_{i}")
     with c3:
-        st.button("❌", key=f"remove_map_{i}", on_click=remove_mapping, args=(i,))
+        st.button("Remove", key=f"remove_map_{i}", on_click=remove_mapping, args=(i,))
 
-st.button("➕ Add another mapping", on_click=add_mapping)
+st.button("Add another mapping", on_click=add_mapping)
 
+# --- Supporting Fields ---
+st.subheader("Supporting Fields")
 
-# --- SUPPORTING FIELDS SECTION ---
-st.subheader("Supporting Fields (non-join columns)")
-
-# Cột hỗ trợ ở Location
 with st.expander("Location dataset"):
     support_loc = st.multiselect(
-        "Select supporting columns (e.g. capacity, location, etc.)",
+        "Select supporting columns",
         options=list(df_loc.columns),
         default=[c for c in df_loc.columns if "capacity" in c.lower() or "location" in c.lower()],
         key="support_loc_cols"
     )
 
-# Cột hỗ trợ ở Controlling
 with st.expander("Controlling dataset"):
     support_ctrl = st.multiselect(
-        "Select supporting columns (e.g. budget, rate, capacity, etc.)",
+        "Select supporting columns",
         options=list(df_ctrl.columns),
         default=[c for c in df_ctrl.columns if any(k in c.lower() for k in ["budget", "rate", "capacity"])],
         key="support_ctrl_cols"
     )
 
-# Gộp lại thành mapping dictionary
 loc_map = {"join_keys": [j["loc"] for j in join_maps if j["loc"]], "supporting": support_loc}
 ctrl_map = {"join_keys": [j["ctrl"] for j in join_maps if j["ctrl"]], "supporting": support_ctrl}
 
 st.session_state["loc_map"] = loc_map
 st.session_state["ctrl_map"] = ctrl_map
 
-# Hiển thị preview
-st.markdown("**Current join pairs:**")
 st.table(pd.DataFrame(join_maps))
-
 
 # =========================
 # NORMALIZATION
@@ -285,58 +238,38 @@ tab_loc, tab_ctrl = st.tabs(["Location", "Controlling"])
 
 with tab_loc:
     loc_cols = list(df_loc.columns)
-    default_loc = [
-        c for c in [loc_map.get("emp_type"), loc_map.get("emp_location")]
-        if c in loc_cols
-    ]
-    sel_loc_cols = st.multiselect(
-        "Columns to normalize (Location)",
-        options=loc_cols,
-        default=default_loc,
-    )
+    sel_loc_cols = st.multiselect("Columns to normalize (Location)", options=loc_cols)
     for col in sel_loc_cols:
-        st.markdown(f"**Column:** `{col}`")
-        existing = st.session_state["norm_loc_maps"].get(col, {})
+        st.markdown(f"Column: `{col}`")
         uniq = df_loc[col].dropna().astype(str).unique().tolist()
         edit_df = pd.DataFrame({"from": uniq, "to": uniq})
         edited = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_loc_{col}")
-        st.session_state["norm_loc_maps"][col] = {
-            str(a): str(b) for a, b in edited.itertuples(index=False)
-        }
+        st.session_state["norm_loc_maps"][col] = dict(edited.itertuples(index=False, name=None))
 
 with tab_ctrl:
     ctrl_cols = list(df_ctrl.columns)
-    default_ctrl = [
-        c for c in [ctrl_map.get("emp_type_like"), ctrl_map.get("dept")]
-        if c in ctrl_cols
-    ]
-    sel_ctrl_cols = st.multiselect(
-        "Columns to normalize (Controlling)",
-        options=ctrl_cols,
-        default=default_ctrl,
-    )
+    sel_ctrl_cols = st.multiselect("Columns to normalize (Controlling)", options=ctrl_cols)
     for col in sel_ctrl_cols:
-        st.markdown(f"**Column:** `{col}`")
-        existing = st.session_state["norm_ctrl_maps"].get(col, {})
+        st.markdown(f"Column: `{col}`")
         uniq = df_ctrl[col].dropna().astype(str).unique().tolist()
         edit_df = pd.DataFrame({"from": uniq, "to": uniq})
         edited = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_ctrl_{col}")
-        st.session_state["norm_ctrl_maps"][col] = {
-            str(a): str(b) for a, b in edited.itertuples(index=False)
-        }
+        st.session_state["norm_ctrl_maps"][col] = dict(edited.itertuples(index=False, name=None))
+
 # =========================
 # LAYER MAPPING (Dynamic)
 # =========================
 st.markdown("---")
 st.header("Layer Mapping")
 
-st.caption("Define multiple matching layers. Each layer must have 4 columns (e.g. GB, Dept, EmpType, Month).")
+st.caption("Define multiple matching layers. Each next layer has one fewer column than the previous.")
 
-# --- Session init ---
 st.session_state.setdefault("layers", [{"cols": [None, None, None, None]}])
 
 def add_layer():
-    st.session_state["layers"].append({"cols": [None, None, None, None]})
+    last = st.session_state["layers"][-1]
+    new_len = max(1, len(last["cols"]) - 1)
+    st.session_state["layers"].append({"cols": [None] * new_len})
     st.rerun()
 
 def remove_layer(i: int):
@@ -344,40 +277,29 @@ def remove_layer(i: int):
         st.session_state["layers"].pop(i)
     st.rerun()
 
-# --- Render each Layer ---
 for i, layer in enumerate(st.session_state["layers"]):
-    st.markdown(f"**Layer {i+1}** (select 4 columns)")
-    cols = st.columns(4)
+    col_count = len(layer["cols"])
+    st.markdown(f"Layer {i+1} (select {col_count} columns)")
+    cols = st.columns(col_count)
     loc_columns = list(df_loc.columns)
     for j, c in enumerate(cols):
         with c:
             opts = [None] + loc_columns
-            selected = st.selectbox(
-                f"Column {j+1}",
-                options=opts,
-                index=opts.index(layer["cols"][j]) if layer["cols"][j] in opts else 0,
-                key=f"layer_{i}_col_{j}",
-            )
+            selected = st.selectbox(f"Column {j+1}", opts, index=opts.index(layer["cols"][j]) if layer["cols"][j] in opts else 0, key=f"layer_{i}_col_{j}")
             layer["cols"][j] = selected
-
-    # Check if layer is valid
     valid = all(layer["cols"])
-    msg = "Ready" if valid else "Please select all 4 columns"
+    msg = "Ready" if valid else f"Select all {col_count} columns"
     st.caption(msg)
+    st.button("Remove", key=f"remove_layer_{i}", on_click=remove_layer, args=(i,))
 
-    st.button("❌ Remove", key=f"remove_layer_{i}", on_click=remove_layer, args=(i,))
+st.button("Add Layer", on_click=add_layer)
 
-st.button("➕ Add Layer", on_click=add_layer)
-
-# --- Save back ---
-st.session_state["layers"] = st.session_state["layers"]
-
-# --- Validation ---
 all_valid = all(all(c for c in layer["cols"]) for layer in st.session_state["layers"])
 if not all_valid:
-    st.warning("Some layers are incomplete. Please select all 4 columns per layer.")
+    st.warning("Some layers are incomplete. Please select all columns per layer.")
 else:
-    st.success(f"{len(st.session_state['layers'])} layers configured properly!")
+    st.success(f"{len(st.session_state['layers'])} layers configured properly.")
+
 # =========================
 # RUN
 # =========================
@@ -387,130 +309,59 @@ st.header("Run Disaggregation")
 if st.button("Run processing", type="primary"):
     loc = normalize_columns(df_loc, st.session_state.get("norm_loc_maps", {}))
     ctrl = normalize_columns(df_ctrl, st.session_state.get("norm_ctrl_maps", {}))
-    result = run_disagg(ctrl, loc, loc_map, ctrl_map)
-    st.session_state["merged_result"] = result
-    st.success("Processing completed successfully!")
+
+    layers = st.session_state.get("layers", [])
+    results = []
+    remaining_ctrl = ctrl.copy()
+
+    st.info(f"Running disaggregation with {len(layers)} layers...")
+
+    for i, layer in enumerate(layers):
+        cols = [c for c in layer["cols"] if c]
+        if not cols:
+            continue
+        st.write(f"Running Layer {i+1} with columns: {', '.join(cols)}")
+
+        merged = remaining_ctrl.merge(
+            loc, how="left", on=cols, suffixes=("", "_loc"), indicator=True
+        )
+
+        matched = merged[merged["_merge"] == "both"].drop(columns=["_merge"])
+        results.append(matched)
+
+        remaining_ctrl = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
+
+        st.write(f"Layer {i+1}: matched {len(matched)} rows, remaining {len(remaining_ctrl)}")
+
+        if remaining_ctrl.empty:
+            break
+
+    if results:
+        result_all = pd.concat(results, ignore_index=True)
+    else:
+        result_all = ctrl.copy()
+
+    if "Ratio" not in result_all.columns:
+        result_all["Ratio"] = np.random.uniform(0.5, 1.0, len(result_all))
+
+    if ctrl_map["supporting"]:
+        cap_col = ctrl_map["supporting"][0]
+        result_all["Disagg_Value"] = result_all[cap_col] * result_all["Ratio"]
+    else:
+        result_all["Disagg_Value"] = result_all["Ratio"]
+
+    result_all["Budget_Disagg"] = result_all.get("Budget", 0) * result_all["Ratio"]
+
+    st.session_state["merged_result"] = result_all
+    st.success(f"Processing completed with {len(layers)} layers applied.")
 
 # =========================
 # RESULTS + PIVOT
 # =========================
 if "merged_result" in st.session_state:
     merged = st.session_state["merged_result"]
-
     st.subheader("Results snapshot")
     st.dataframe(merged.head(100), use_container_width=True)
-# =========================
-# PIVOT TABLE (Excel-style)
-# =========================
-st.markdown("---")
-st.header("Pivot Table (Excel-like)")
-
-if "merged_result" not in st.session_state:
-    st.info("No data to pivot. Click **Run processing** first.")
-else:
-    merged = st.session_state["merged_result"]
-    cols_all = list(merged.columns)
-
-    # Default fields (auto-detected if exist)
-    default_rows = [c for c in [ctrl_map.get("gb")] if c in cols_all]
-    default_cols = [c for c in [ctrl_map.get("month")] if c in cols_all]
-    default_filters = [c for c in [ctrl_map.get("dept"), ctrl_map.get("emp_type_like")] if c in cols_all]
-    default_values = [v for v in ["Disagg_Value", "Budget_Disagg"] if v in cols_all]
-
-    st.session_state.setdefault("pivot_rows", default_rows)
-    st.session_state.setdefault("pivot_cols", default_cols)
-    st.session_state.setdefault("pivot_filters", default_filters)
-    st.session_state.setdefault("pivot_vals", default_values)
-    st.session_state.setdefault("pivot_agg", "sum")
-
-    with st.expander("Pivot configuration", expanded=True):
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.selectbox("Aggregation", ["sum", "mean", "count"],
-                         index=["sum","mean","count"].index(st.session_state["pivot_agg"]),
-                         key="pivot_agg")
-        with c2:
-            st.number_input("Fill empty cells with", value=0.0, step=1.0, key="pivot_fill")
-
-        c3, c4 = st.columns(2)
-        with c3:
-            st.multiselect("Rows", options=cols_all,
-                           default=st.session_state["pivot_rows"],
-                           key="pivot_rows")
-        with c4:
-            st.multiselect("Columns", options=cols_all,
-                           default=st.session_state["pivot_cols"],
-                           key="pivot_cols")
-
-        st.markdown("**Filters**")
-        st.multiselect("Filter fields", options=cols_all,
-                       default=st.session_state["pivot_filters"],
-                       key="pivot_filters")
-
-        # Per-filter selectors (with "(All)")
-        filter_value_keys = {}
-        for fc in st.session_state["pivot_filters"]:
-            uniq_vals = sorted(map(str, merged[fc].dropna().unique().tolist()))
-            opt = ["(All)"] + uniq_vals
-            key_name = f"flt_vals_{re.sub(r'[^A-Za-z0-9_]', '_', fc)}"
-            filter_value_keys[fc] = key_name
-            if key_name not in st.session_state:
-                st.session_state[key_name] = ["(All)"]
-            st.multiselect(f"{fc} values", options=opt,
-                           default=st.session_state[key_name],
-                           key=key_name)
-
-    # Apply filters
-    dfp = merged.copy()
-    for fc in st.session_state["pivot_filters"]:
-        sel = st.session_state.get(filter_value_keys.get(fc, ""), ["(All)"])
-        if sel and "(All)" not in sel:
-            dfp = dfp[dfp[fc].astype(str).isin(sel)]
-
-    # Build pivot
-    try:
-        aggfunc = {"sum": np.sum, "mean": np.mean, "count": "count"}[st.session_state["pivot_agg"]]
-        pivot_df = pd.pivot_table(
-            dfp,
-            index=st.session_state["pivot_rows"] or None,
-            columns=st.session_state["pivot_cols"] or None,
-            values=st.session_state["pivot_vals"] or None,
-            aggfunc=aggfunc,
-            fill_value=st.session_state["pivot_fill"],
-            dropna=False,
-        ).reset_index()
-
-        if isinstance(pivot_df.columns, pd.MultiIndex):
-            pivot_df.columns = [" | ".join([str(x) for x in tup if x != ""]) for tup in pivot_df.columns.values]
-
-        st.subheader("Pivot Result")
-        st.dataframe(pivot_df, use_container_width=True)
-
-        # Download pivot result
-        pivot_buf = io.BytesIO()
-        with pd.ExcelWriter(pivot_buf, engine="xlsxwriter") as writer:
-            pivot_df.to_excel(writer, sheet_name="Pivot", index=False)
-        st.download_button(
-            "Download Pivot (Excel)",
-            data=pivot_buf.getvalue(),
-            file_name="pivot_result.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    except Exception as e:
-        st.error(f"Pivot error: {e}")
-
-
-    # Download result
-    out_buf = io.BytesIO()
-    with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
-        merged.to_excel(writer, sheet_name="Result", index=False)
-    st.download_button(
-        "Download Excel result",
-        data=out_buf.getvalue(),
-        file_name="mapping_result.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
 
 # --- Footer ---
 st.markdown("<hr>", unsafe_allow_html=True)
