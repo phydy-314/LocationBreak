@@ -308,38 +308,79 @@ for i, pair in enumerate(join_maps):
 st.button("Add another mapping", on_click=add_mapping)
 
 # =========================
-# LAYER CONFIG (dynamic counts)
+# =========================
+# LAYER MAPPING (Dynamic + Adjustable Columns)
 # =========================
 st.markdown("---")
 st.header("Layer Mapping")
-st.caption("Set how many pairs are used per layer (must be <= number of valid join pairs). Example: if you have 4 pairs, Layer 1 = 4, Layer 2 = 3, Layer 3 = 1.")
 
-valid_pairs = [p for p in join_maps if p.get("loc") and p.get("ctrl")]
-max_pairs = len(valid_pairs)
+st.caption("""
+Define multiple matching layers dynamically.  
+Each layer can have a custom number of columns (1–6 for example).  
+Higher layers use more detailed keys; lower layers use fewer keys.
+""")
 
-st.session_state.setdefault("layer_sizes", [max_pairs] if max_pairs else [])
+# --- Session init ---
+st.session_state.setdefault("layers", [{"n_cols": 4, "cols": [None]*4}])
 
-c_l, c_btn = st.columns([6, 1])
-with c_l:
-    # simple editor for a comma-separated list of integers
-    default_text = ",".join(str(x) for x in st.session_state["layer_sizes"]) if st.session_state["layer_sizes"] else ""
-    txt = st.text_input("Layer sizes (comma-separated)", value=default_text, key="layer_sizes_text")
-with c_btn:
-    if st.button("Apply"):
-        parsed = []
-        for tok in [t.strip() for t in txt.split(",") if t.strip()]:
-            try:
-                parsed.append(int(tok))
-            except:
-                pass
-        st.session_state["layer_sizes"] = parsed
-        st.rerun()
+def add_layer():
+    st.session_state["layers"].append({"n_cols": 4, "cols": [None]*4})
+    st.rerun()
 
-layer_sizes = [s for s in st.session_state.get("layer_sizes", []) if isinstance(s, int) and s > 0]
-if max_pairs and not layer_sizes:
-    st.info(f"Tip: You have {max_pairs} valid pairs. Try layer sizes like: {max_pairs},{max_pairs-1},1")
-elif layer_sizes and any(s > max_pairs for s in layer_sizes):
-    st.warning(f"Some layer sizes exceed number of valid pairs ({max_pairs}). They will be ignored during run.")
+def remove_layer(i: int):
+    if 0 <= i < len(st.session_state["layers"]):
+        st.session_state["layers"].pop(i)
+    st.rerun()
+
+# --- Render each Layer ---
+for i, layer in enumerate(st.session_state["layers"]):
+    st.markdown(f"**Layer {i+1}**")
+
+    # Select number of columns
+    c_num, _ = st.columns([1, 6])
+    with c_num:
+        n_cols = st.number_input(
+            "Number of columns",
+            min_value=1, max_value=10,
+            value=layer.get("n_cols", 4),
+            step=1,
+            key=f"ncols_{i}"
+        )
+        if n_cols != layer.get("n_cols"):
+            layer["n_cols"] = n_cols
+            layer["cols"] = (layer["cols"] + [None]*n_cols)[:n_cols]
+
+    # Render selectboxes for that layer
+    st.caption(f"Select {layer['n_cols']} columns for Layer {i+1}")
+    cols_row = st.columns(layer["n_cols"])
+    loc_columns = list(df_loc.columns)
+
+    for j, c in enumerate(cols_row):
+        with c:
+            opts = [None] + loc_columns
+            selected = st.selectbox(
+                f"Column {j+1}",
+                options=opts,
+                index=opts.index(layer["cols"][j]) if layer["cols"][j] in opts else 0,
+                key=f"layer_{i}_col_{j}"
+            )
+            layer["cols"][j] = selected
+
+    valid = all(layer["cols"])
+    msg = "Ready" if valid else "Please select all columns"
+    st.caption(msg)
+
+    st.button("Remove Layer", key=f"remove_layer_{i}", on_click=remove_layer, args=(i,))
+
+st.button("Add Layer", on_click=add_layer)
+
+# --- Validation summary ---
+st.session_state["layers"] = st.session_state["layers"]
+all_valid = all(all(c for c in layer["cols"]) for layer in st.session_state["layers"])
+if not all_valid:
+    st.warning("Some layers are incomplete. Please select all columns per layer.")
+else:
+    st.success(f"{len(st.session_state['layers'])} layers configured properly!")
 
 # =========================
 # NORMALIZATION
