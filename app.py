@@ -189,10 +189,21 @@ st.header("Map Columns")
 
 st.caption("Define how Location and Controlling datasets align.")
 
-# --- JOIN KEYS SECTION ---
+# ===== Join Key Mappings (safe add/remove with callbacks) =====
 st.subheader("🔹 Join Key Mappings")
 
+# state init
 st.session_state.setdefault("join_mappings", [{"loc": None, "ctrl": None}])
+
+def add_mapping():
+    st.session_state["join_mappings"].append({"loc": None, "ctrl": None})
+    st.rerun()
+
+def remove_mapping(i: int):
+    if 0 <= i < len(st.session_state["join_mappings"]):
+        st.session_state["join_mappings"].pop(i)
+    st.rerun()
+
 join_maps = st.session_state["join_mappings"]
 
 for i, pair in enumerate(join_maps):
@@ -207,7 +218,7 @@ for i, pair in enumerate(join_maps):
             f"Location column {i+1}",
             options=loc_cols,
             index=idx,
-            key=f"join_loc_{i}"
+            key=f"join_loc_{i}",
         )
 
     with c2:
@@ -219,20 +230,13 @@ for i, pair in enumerate(join_maps):
             f"Controlling column {i+1}",
             options=ctrl_cols,
             index=idx,
-            key=f"join_ctrl_{i}"
+            key=f"join_ctrl_{i}",
         )
 
     with c3:
-        if st.button("❌", key=f"remove_map_{i}"):
-            join_maps.pop(i)
-            st.experimental_rerun()
+        st.button("❌", key=f"remove_map_{i}", on_click=remove_mapping, args=(i,))
 
-if st.button("➕ Add another mapping"):
-    join_maps.append({"loc": None, "ctrl": None})
-    st.experimental_rerun()
-
-st.session_state["join_mappings"] = join_maps
-
+st.button("➕ Add another mapping", on_click=add_mapping)
 
 
 # --- SUPPORTING FIELDS SECTION ---
