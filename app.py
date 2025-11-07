@@ -458,19 +458,28 @@ if st.button("Run processing", type="primary"):
             )
 
             # Merge & compute disagg
-            # Build matching keys by fuzzy name (case & space-insensitive)
-            left_cols = [c for c in cols if c in remaining_ctrl.columns]
-            right_cols = []
-            
+            # --- Build safe matching keys (auto align by name, case & space-insensitive) ---
+            left_cols, right_cols = [], []
             for c in cols:
-                c_clean = c.lower().replace(" ", "")
-                match = next((r for r in ratio_df.columns if r.lower().replace(" ", "") == c_clean), None)
-                if match:
-                    right_cols.append(match)
-                else:
-                    right_cols.append(c)  # fallback if identical
+                # tìm cột bên trái
+                l_match = next((l for l in remaining_ctrl.columns if l.lower().replace(" ", "") == c.lower().replace(" ", "")), None)
+                r_match = next((r for r in ratio_df.columns if r.lower().replace(" ", "") == c.lower().replace(" ", "")), None)
+                if l_match and r_match:
+                    left_cols.append(l_match)
+                    right_cols.append(r_match)
             
-            # Merge flexibly
+            # --- Nếu không có cột trùng thì bỏ qua layer ---
+            if not left_cols or not right_cols:
+                st.warning(f"Layer {idx} skipped — no common keys between datasets.")
+                continue
+            
+            # --- Bảo đảm có cùng độ dài ---
+            if len(left_cols) != len(right_cols):
+                min_len = min(len(left_cols), len(right_cols))
+                left_cols = left_cols[:min_len]
+                right_cols = right_cols[:min_len]
+            
+            # --- Merge an toàn ---
             merged = remaining_ctrl.merge(
                 ratio_df,
                 how="left",
@@ -478,6 +487,7 @@ if st.button("Run processing", type="primary"):
                 right_on=right_cols,
                 suffixes=("", "_r"),
             )
+
 
 
             # Base disaggregation
