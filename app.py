@@ -117,21 +117,47 @@ def guess(colnames, candidates):
 # SIDEBAR
 # =========================
 with st.sidebar:
-    st.header("Upload Excel")
-    excel_file = st.file_uploader("Upload Excel file", type=["xlsx", "xlsm", "xls"])
-    if not excel_file:
-        st.info("Upload your Excel file to get started.")
+    st.header("Upload Excel Files")
+
+    st.markdown("#### Location File")
+    location_file = st.file_uploader(
+        "Upload Location Excel file",
+        type=["xlsx", "xlsm", "xls"],
+        key="loc_file_uploader"
+    )
+
+    st.markdown("#### Controlling File")
+    controlling_file = st.file_uploader(
+        "Upload Controlling Excel file",
+        type=["xlsx", "xlsm", "xls"],
+        key="ctrl_file_uploader"
+    )
+
+    if not location_file or not controlling_file:
+        st.info("Please upload both Location and Controlling Excel files to continue.")
         st.stop()
 
 # =========================
-# LOAD SHEETS
+# LOAD SHEETS FROM EACH FILE
 # =========================
-all_sheets = load_excel(excel_file)
-sheet_loc = st.selectbox("Location sheet", options=list(all_sheets.keys()), index=0)
-sheet_ctrl = st.selectbox("Controlling sheet", options=list(all_sheets.keys()), index=1 if len(all_sheets) > 1 else 0)
+loc_sheets = load_excel(location_file)
+ctrl_sheets = load_excel(controlling_file)
 
-df_loc = all_sheets[sheet_loc].copy()
-df_ctrl = all_sheets[sheet_ctrl].copy()
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("Select Location Sheet")
+    sheet_loc = st.selectbox("Location sheet", options=list(loc_sheets.keys()), key="sheet_loc")
+
+with col2:
+    st.subheader("Select Controlling Sheet")
+    sheet_ctrl = st.selectbox("Controlling sheet", options=list(ctrl_sheets.keys()), key="sheet_ctrl")
+
+# Load dataframes
+df_loc = loc_sheets[sheet_loc].copy()
+df_ctrl = ctrl_sheets[sheet_ctrl].copy()
+
+st.success(f"Loaded {len(df_loc)} rows from **{sheet_loc}** (Location file)")
+st.success(f"Loaded {len(df_ctrl)} rows from **{sheet_ctrl}** (Controlling file)")
 
 # =========================
 # BREAK CONFIGURATION
@@ -257,19 +283,23 @@ with tab_ctrl:
         st.session_state["norm_ctrl_maps"][col] = dict(edited.itertuples(index=False, name=None))
 
 # =========================
-# LAYER MAPPING (Dynamic)
+# LAYER MAPPING (Fully Dynamic)
 # =========================
 st.markdown("---")
 st.header("Layer Mapping")
 
-st.caption("Define multiple matching layers. Each next layer has one fewer column than the previous.")
+st.caption("""
+Define multiple matching layers.  
+Each layer can have a custom number of columns.  
+Use the controls below to set up your layers dynamically.
+""")
 
-st.session_state.setdefault("layers", [{"cols": [None, None, None, None]}])
+# --- Initialize session state ---
+if "layers" not in st.session_state:
+    st.session_state["layers"] = [{"cols": [], "col_count": 1}]
 
 def add_layer():
-    last = st.session_state["layers"][-1]
-    new_len = max(1, len(last["cols"]) - 1)
-    st.session_state["layers"].append({"cols": [None] * new_len})
+    st.session_state["layers"].append({"cols": [], "col_count": 1})
     st.rerun()
 
 def remove_layer(i: int):
@@ -277,28 +307,61 @@ def remove_layer(i: int):
         st.session_state["layers"].pop(i)
     st.rerun()
 
+# --- Render each Layer ---
 for i, layer in enumerate(st.session_state["layers"]):
-    col_count = len(layer["cols"])
-    st.markdown(f"Layer {i+1} (select {col_count} columns)")
-    cols = st.columns(col_count)
+    st.markdown(f"**Layer {i+1}**")
+
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        # User chooses how many columns to include in this layer
+        new_count = st.number_input(
+            f"Number of columns for Layer {i+1}",
+            min_value=1,
+            max_value=len(df_loc.columns),
+            value=layer.get("col_count", 1),
+            key=f"layer_{i}_count",
+            step=1
+        )
+        layer["col_count"] = new_count
+
+    with c2:
+        st.button("Remove Layer", key=f"remove_layer_{i}", on_click=remove_layer, args=(i,))
+
+    # Update column list based on count
+    while len(layer["cols"]) < layer["col_count"]:
+        layer["cols"].append(None)
+    if len(layer["cols"]) > layer["col_count"]:
+        layer["cols"] = layer["cols"][:layer["col_count"]]
+
+    # Draw selectboxes for columns
+    cols = st.columns(layer["col_count"])
     loc_columns = list(df_loc.columns)
     for j, c in enumerate(cols):
         with c:
             opts = [None] + loc_columns
-            selected = st.selectbox(f"Column {j+1}", opts, index=opts.index(layer["cols"][j]) if layer["cols"][j] in opts else 0, key=f"layer_{i}_col_{j}")
+            selected = st.selectbox(
+                f"Column {j+1}",
+                opts,
+                index=opts.index(layer["cols"][j]) if layer["cols"][j] in opts else 0,
+                key=f"layer_{i}_col_{j}"
+            )
             layer["cols"][j] = selected
+
     valid = all(layer["cols"])
-    msg = "Ready" if valid else f"Select all {col_count} columns"
+    msg = "Ready" if valid else f"Please select all {layer['col_count']} columns"
     st.caption(msg)
-    st.button("Remove", key=f"remove_layer_{i}", on_click=remove_layer, args=(i,))
 
-st.button("Add Layer", on_click=add_layer)
+# --- Add new Layer button ---
+st.button("Add New Layer", on_click=add_layer)
 
-all_valid = all(all(c for c in layer["cols"]) for layer in st.session_state["layers"])
-if not all_valid:
-    st.warning("Some layers are incomplete. Please select all columns per layer.")
+# --- Validation summary ---
+valid_layers = [layer for layer in st.session_state["layers"] if all(layer["cols"])]
+st.session_state["layers"] = st.session_state["layers"]
+
+if not valid_layers:
+    st.warning("No complete layers found. Please configure at least one layer.")
 else:
-    st.success(f"{len(st.session_state['layers'])} layers configured properly.")
+    st.success(f"{len(valid_layers)} valid layers configured successfully.")
 
 # =========================
 # RUN
