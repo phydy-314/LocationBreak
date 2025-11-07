@@ -190,41 +190,49 @@ st.header("Map Columns")
 st.caption("Define how Location and Controlling datasets align.")
 
 # --- JOIN KEYS SECTION ---
-st.subheader("Join Key Mappings")
+st.subheader("🔹 Join Key Mappings")
 
-# Lưu cấu hình trong session_state để giữ khi rerun
 st.session_state.setdefault("join_mappings", [{"loc": None, "ctrl": None}])
-
 join_maps = st.session_state["join_mappings"]
 
-# Vẽ danh sách các cặp mapping
 for i, pair in enumerate(join_maps):
     c1, c2, c3 = st.columns([3, 3, 1])
+
     with c1:
+        loc_cols = [None] + list(df_loc.columns)
+        idx = 0
+        if pair.get("loc") in df_loc.columns:
+            idx = loc_cols.index(pair["loc"])
         join_maps[i]["loc"] = st.selectbox(
             f"Location column {i+1}",
-            options=[None] + list(df_loc.columns),
-            index=0 if pair["loc"] is None else [None] + list(df_loc.columns).index(pair["loc"]) + 1,
+            options=loc_cols,
+            index=idx,
             key=f"join_loc_{i}"
         )
+
     with c2:
+        ctrl_cols = [None] + list(df_ctrl.columns)
+        idx = 0
+        if pair.get("ctrl") in df_ctrl.columns:
+            idx = ctrl_cols.index(pair["ctrl"])
         join_maps[i]["ctrl"] = st.selectbox(
             f"Controlling column {i+1}",
-            options=[None] + list(df_ctrl.columns),
-            index=0 if pair["ctrl"] is None else [None] + list(df_ctrl.columns).index(pair["ctrl"]) + 1,
+            options=ctrl_cols,
+            index=idx,
             key=f"join_ctrl_{i}"
         )
+
     with c3:
         if st.button("❌", key=f"remove_map_{i}"):
             join_maps.pop(i)
             st.experimental_rerun()
 
-# Thêm nút thêm cặp mới
 if st.button("➕ Add another mapping"):
     join_maps.append({"loc": None, "ctrl": None})
     st.experimental_rerun()
 
 st.session_state["join_mappings"] = join_maps
+
 
 
 # --- SUPPORTING FIELDS SECTION ---
