@@ -458,13 +458,27 @@ if st.button("Run processing", type="primary"):
             )
 
             # Merge & compute disagg
+            # Build matching keys by fuzzy name (case & space-insensitive)
+            left_cols = [c for c in cols if c in remaining_ctrl.columns]
+            right_cols = []
+            
+            for c in cols:
+                c_clean = c.lower().replace(" ", "")
+                match = next((r for r in ratio_df.columns if r.lower().replace(" ", "") == c_clean), None)
+                if match:
+                    right_cols.append(match)
+                else:
+                    right_cols.append(c)  # fallback if identical
+            
+            # Merge flexibly
             merged = remaining_ctrl.merge(
                 ratio_df,
                 how="left",
-                left_on=cols,
-                right_on=cols,
+                left_on=left_cols,
+                right_on=right_cols,
                 suffixes=("", "_r"),
             )
+
 
             # Base disaggregation
             merged["Disagg_Value"] = merged[ctrl_capacity_col] * merged["Ratio"].fillna(0)
