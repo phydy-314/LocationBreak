@@ -9,9 +9,6 @@ import streamlit as st
 # =========================
 # PAGE CONFIG
 # =========================
-import streamlit as st
-st.error("🔥 You are running the NEW version with run_disagg() — not fallback_merge!")
-
 st.set_page_config(page_title="Proportional Disaggregation", layout="wide")
 st.title("Proportional Disaggregation")
 
