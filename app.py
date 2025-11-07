@@ -1,6 +1,7 @@
 import io
 import re
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -14,28 +15,54 @@ st.title("Proportional Disaggregation")
 st.markdown(
     """
     This application performs **proportional disaggregation** of Controlling data 
-    based on capacity ratios from a selected dimension (e.g., Location, Department, GB, etc.).  
-    By default, it breaks values by *Location*, but you can flexibly choose other dimensions.
+    based on capacity ratios from employee location.
+    Typically, it breaks Controlling values by *Emp Location* proportionally to capacity.
     """,
     unsafe_allow_html=True
 )
 
 # =========================
+# CONSTANTS
+# =========================
+REQUIRED_KEYS_LOCATION = [
+    "gb",
+    "dept",
+    "emp_type",
+    "month",
+    "emp_location",
+    "capacity_loc",
+]
+REQUIRED_KEYS_CTRL = [
+    "gb",
+    "dept",
+    "emp_type_like",
+    "month",
+    "capacity",
+    "budget",
+    "rate",
+]
+
+
+# =========================
 # HELPERS
 # =========================
-def _clean_cols(df):
+def _clean_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).replace("\u00A0", " ").strip() for c in df.columns]
     return df
 
-@st.cache_data
+
+@st.cache_data(show_spinner=False)
 def load_excel(file):
     ext = Path(file.name).suffix.lower()
-    engine = "openpyxl" if ext in [".xlsx", ".xlsm"] else None
+    engine = "openpyxl" if ext in [".xlsx", ".xlsm", ".xltx", ".xltm"] else None
     xls = pd.ExcelFile(file, engine=engine)
     return {sn: _clean_cols(xls.parse(sn)) for sn in xls.sheet_names}
 
-def normalize_columns(df, norm_maps):
+
+def normalize_columns(df: pd.DataFrame, norm_maps: dict) -> pd.DataFrame:
+    if not norm_maps:
+        return df
     out = df.copy()
     for col, mapping in norm_maps.items():
         if col in out.columns and isinstance(mapping, dict):
@@ -43,65 +70,62 @@ def normalize_columns(df, norm_maps):
             out[col] = s.map(mapping).fillna(s)
     return out
 
-def ensure_month_order(df, month_col):
-    """Ensure month columns sort chronologically if format is YYYY-MM."""
-    try:
-        df["_sort_key"] = pd.to_datetime(df[month_col], errors="coerce")
-        df = df.sort_values("_sort_key").drop(columns="_sort_key")
-    except Exception:
-        pass
-    return df
 
-def compute_ratio_expanding(df_loc, keys, break_col, cap_col):
-    df = df_loc.copy()
-    df = df[keys + [break_col, cap_col]]
-    cap_by = df.groupby(keys + [break_col], as_index=False)[cap_col].sum()
-    cap_total = df.groupby(keys, as_index=False)[cap_col].sum()
-    merged = cap_by.merge(cap_total, on=keys, how="left", suffixes=("_dim", "_tot"))
-    merged["Ratio"] = merged[f"{cap_col}_dim"] / merged[f"{cap_col}_tot"].replace({0: np.nan})
-    merged["Ratio"] = merged["Ratio"].fillna(0.0)
-    return merged.drop(columns=[f"{cap_col}_dim", f"{cap_col}_tot"])
+def compute_ratio(df_loc, m_loc):
+    use_cols = [
+        m_loc["gb"],
+        m_loc["dept"],
+        m_loc["emp_type"],
+        m_loc["month"],
+        m_loc["emp_location"],
+        m_loc["capacity_loc"],
+    ]
+    df = df_loc[use_cols].copy()
+    cap_by_loc = (
+        df.groupby(
+            [m_loc["gb"], m_loc["dept"], m_loc["emp_type"], m_loc["month"], m_loc["emp_location"]],
+            dropna=False,
+            as_index=False,
+        )[m_loc["capacity_loc"]]
+        .sum()
+        .rename(columns={m_loc["capacity_loc"]: "_cap_loc"})
+    )
+    cap_total = (
+        df.groupby(
+            [m_loc["gb"], m_loc["dept"], m_loc["emp_type"], m_loc["month"]],
+            dropna=False,
+            as_index=False,
+        )[m_loc["capacity_loc"]]
+        .sum()
+        .rename(columns={m_loc["capacity_loc"]: "_cap_total"})
+    )
+    ratio_df = cap_by_loc.merge(cap_total, on=[m_loc["gb"], m_loc["dept"], m_loc["emp_type"], m_loc["month"]], how="left")
+    ratio_df["Ratio"] = ratio_df["_cap_loc"] / ratio_df["_cap_total"].replace({0: np.nan})
+    ratio_df["Ratio"] = ratio_df["Ratio"].fillna(0.0)
+    return ratio_df
 
-def run_fallback_merges_expand(df_ctrl, df_loc, m_loc, m_ctrl, enabled_layers, break_col):
+
+def run_disagg(df_ctrl, df_loc, m_loc, m_ctrl):
+    ratio_df = compute_ratio(df_loc, m_loc)
     base = df_ctrl.copy()
-    if "Disagg_Value" not in base:
-        base["Disagg_Value"] = np.nan
+    base = base.merge(
+        ratio_df,
+        how="left",
+        left_on=[m_ctrl["gb"], m_ctrl["dept"], m_ctrl["emp_type_like"], m_ctrl["month"]],
+        right_on=[m_loc["gb"], m_loc["dept"], m_loc["emp_type"], m_loc["month"]],
+    )
+    base["Disagg_Value"] = base[m_ctrl["capacity"]] * base["Ratio"]
 
-    def _layer(base_df, keys_loc, layer_tag):
-        mask = base_df["Disagg_Value"].isna()
-        if mask.sum() == 0:
-            return base_df, 0
-        work = base_df.loc[mask].copy()
-        ratio_df = compute_ratio_expanding(df_loc, keys_loc, break_col, m_loc["capacity_loc"])
-        left_keys = [m_ctrl[k] for k in keys_loc if k in m_ctrl]
-        right_keys = [m_loc[k] for k in keys_loc if k in m_loc]
-        work = work.merge(ratio_df, left_on=left_keys, right_on=right_keys, how="left")
-        work["Disagg_Value"] = work[m_ctrl["capacity"]] * work["Ratio"]
-        cnt = work["Ratio"].notna().sum()
-        base_df.loc[mask, "Disagg_Value"] = work["Disagg_Value"]
-        return base_df, int(cnt)
+    cap_series = base[m_ctrl["capacity"]].replace({0: np.nan})
+    share = base["Disagg_Value"] / cap_series
+    share = np.nan_to_num(share, nan=0.0)
 
-    merge_info = {}
-    for i, keys_loc in enumerate([
-        [m_loc["gb"], m_loc["dept"], m_loc["emp_type"], m_loc["month"]],
-        [m_loc["dept"], m_loc["emp_type"], m_loc["month"]],
-        [m_loc["gb"], m_loc["dept"], m_loc["month"]],
-        [m_loc["dept"], m_loc["month"]],
-    ], start=1):
-        tag = f"L{i}"
-        if enabled_layers.get(tag, True):
-            base, cnt = _layer(base, keys_loc, tag)
-            merge_info[tag] = cnt
-    return base, merge_info
+    base["Budget_Disagg"] = base[m_ctrl["budget"]] * share
+    denom = (base[m_ctrl["rate"]] * base["Disagg_Value"]).replace({0: np.nan})
+    base["Billable_Disagg"] = base[m_ctrl["budget"]] / denom
+    base["Billable_Disagg"] = base["Billable_Disagg"].fillna(0.0)
+    return base
 
-def compute_outputs(df, m_ctrl):
-    df = df.copy()
-    denom_cap = df[m_ctrl["capacity"]].replace({0: np.nan})
-    share = df["Disagg_Value"] / denom_cap
-    df["Budget_Disagg"] = df[m_ctrl["budget"]] * share.fillna(0)
-    denom = (df[m_ctrl["rate"]] * df["Disagg_Value"]).replace({0: np.nan})
-    df["Billable_Disagg"] = (df[m_ctrl["budget"]] / denom).fillna(0)
-    return df
 
 def guess(colnames, candidates):
     col_lower = {str(c).lower(): c for c in colnames}
@@ -110,97 +134,135 @@ def guess(colnames, candidates):
             return col_lower[c.lower()]
     return None
 
+
 # =========================
 # SIDEBAR
 # =========================
 with st.sidebar:
     st.header("Upload Excel")
-    f = st.file_uploader("Upload Excel file", type=["xlsx", "xls"])
-    on_div0 = st.selectbox("Divide-by-zero handling", ["zero", "blank"], index=0)
-
-if not f:
-    st.info("Upload Excel to start.")
-    st.stop()
+    excel_file = st.file_uploader("Upload Excel file", type=["xlsx", "xlsm", "xls"])
+    if not excel_file:
+        st.info("Upload your Excel file to get started.")
+        st.stop()
 
 # =========================
 # LOAD SHEETS
 # =========================
-sheets = load_excel(f)
-sheet_loc = st.selectbox("Location sheet", sheets.keys())
-sheet_ctrl = st.selectbox("Controlling sheet", sheets.keys())
-loc, ctrl = sheets[sheet_loc], sheets[sheet_ctrl]
+all_sheets = load_excel(excel_file)
+sheet_loc = st.selectbox("Location sheet", options=list(all_sheets.keys()), index=0)
+sheet_ctrl = st.selectbox("Controlling sheet", options=list(all_sheets.keys()), index=1 if len(all_sheets) > 1 else 0)
 
-# =========================
-# BREAK DIMENSION
-# =========================
-st.markdown("---")
-st.header("Break Configuration")
-break_col_key = st.selectbox("Select Break Dimension", ["emp_location", "dept", "gb", "emp_type"], index=0)
-st.caption(f"Disaggregate by **{break_col_key}** capacity ratios.")
+df_loc = all_sheets[sheet_loc].copy()
+df_ctrl = all_sheets[sheet_ctrl].copy()
 
 # =========================
 # COLUMN MAPPING
 # =========================
+st.markdown("---")
+st.header("Map Columns")
+
+loc_map, ctrl_map = {}, {}
+
 loc_candidates = {
     "gb": ["GB"],
-    "dept": ["Dept", "Department"],
-    "emp_type": ["Emp Type", "Service"],
-    "month": ["Month"],
-    "emp_location": ["Emp Location", "Location"],
-    "capacity_loc": ["Capacity_Location", "Cap Location"],
+    "dept": ["Resource Dept", "Dept", "Department"],
+    "emp_type": ["Emp Type", "Header Service", "Service"],
+    "month": ["Month", "Revenue Month"],
+    "emp_location": ["Emp Location", "Dim Location", "Location"],
+    "capacity_loc": ["Capacity_Location", "Capacity Location", "Cap Location"],
 }
 ctrl_candidates = {
     "gb": ["GB"],
-    "dept": ["Dept", "Department"],
-    "emp_type_like": ["Emp Type", "Service"],
-    "month": ["Month"],
+    "dept": ["Resource Dept", "Dept", "Department"],
+    "emp_type_like": ["Header Service", "Emp Type", "Service"],
+    "month": ["Revenue Month", "Month"],
     "capacity": ["Capacity"],
     "budget": ["Budget"],
-    "rate": ["Rate"],
+    "rate": ["Rate", "Selling Rate"],
 }
 
-loc_map, ctrl_map = {}, {}
 c1, c2 = st.columns(2)
 with c1:
     st.subheader("Location columns")
-    for k, opts in loc_candidates.items():
-        col = guess(loc.columns, opts)
-        loc_map[k] = st.selectbox(k, [None] + list(loc.columns), index=([None] + list(loc.columns)).index(col) if col else 0)
+    for key in REQUIRED_KEYS_LOCATION:
+        opts = [None] + list(df_loc.columns)
+        g = guess(df_loc.columns, loc_candidates.get(key, []))
+        idx = opts.index(g) if g in opts else 0
+        loc_map[key] = st.selectbox(f"{key}", options=opts, index=idx, key=f"loc_{key}")
 with c2:
     st.subheader("Controlling columns")
-    for k, opts in ctrl_candidates.items():
-        col = guess(ctrl.columns, opts)
-        ctrl_map[k] = st.selectbox(k, [None] + list(ctrl.columns), index=([None] + list(ctrl.columns)).index(col) if col else 0)
+    for key in REQUIRED_KEYS_CTRL:
+        opts = [None] + list(df_ctrl.columns)
+        g = guess(df_ctrl.columns, ctrl_candidates.get(key, []))
+        idx = opts.index(g) if g in opts else 0
+        ctrl_map[key] = st.selectbox(f"{key}", options=opts, index=idx, key=f"ctrl_{key}")
 
 # =========================
-# RUN + LAYERS
+# NORMALIZATION
 # =========================
 st.markdown("---")
-st.header("Run Processing")
-cols = st.columns(4)
-enabled_layers = {
-    "L1": cols[0].checkbox("L1 GB+Dept+EmpType+Month", True),
-    "L2": cols[1].checkbox("L2 Dept+EmpType+Month", True),
-    "L3": cols[2].checkbox("L3 GB+Dept+Month", True),
-    "L4": cols[3].checkbox("L4 Dept+Month", True),
-}
-run = st.button("Run")
-if run:
-    merged, info = run_fallback_merges_expand(ctrl, loc, loc_map, ctrl_map, enabled_layers, break_col_key)
-    merged = compute_outputs(merged, ctrl_map)
-    st.session_state["merged_result"] = merged
-    st.session_state["merge_info"] = info
-    st.success("Processed successfully!")
+st.header("Normalization Rules")
+
+st.session_state.setdefault("norm_loc_maps", {})
+st.session_state.setdefault("norm_ctrl_maps", {})
+
+tab_loc, tab_ctrl = st.tabs(["Location", "Controlling"])
+
+with tab_loc:
+    loc_cols = list(df_loc.columns)
+    sel_loc_cols = st.multiselect(
+        "Columns to normalize (Location)",
+        options=loc_cols,
+        default=[loc_map.get("emp_type"), loc_map.get("emp_location")],
+    )
+    for col in sel_loc_cols:
+        st.markdown(f"**Column:** `{col}`")
+        existing = st.session_state["norm_loc_maps"].get(col, {})
+        uniq = df_loc[col].dropna().astype(str).unique().tolist()
+        edit_df = pd.DataFrame({"from": uniq, "to": uniq})
+        edited = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_loc_{col}")
+        st.session_state["norm_loc_maps"][col] = {
+            str(a): str(b) for a, b in edited.itertuples(index=False)
+        }
+
+with tab_ctrl:
+    ctrl_cols = list(df_ctrl.columns)
+    sel_ctrl_cols = st.multiselect(
+        "Columns to normalize (Controlling)",
+        options=ctrl_cols,
+        default=[ctrl_map.get("emp_type_like"), ctrl_map.get("dept")],
+    )
+    for col in sel_ctrl_cols:
+        st.markdown(f"**Column:** `{col}`")
+        existing = st.session_state["norm_ctrl_maps"].get(col, {})
+        uniq = df_ctrl[col].dropna().astype(str).unique().tolist()
+        edit_df = pd.DataFrame({"from": uniq, "to": uniq})
+        edited = st.data_editor(edit_df, num_rows="dynamic", key=f"norm_ctrl_{col}")
+        st.session_state["norm_ctrl_maps"][col] = {
+            str(a): str(b) for a, b in edited.itertuples(index=False)
+        }
 
 # =========================
-# RESULTS
+# RUN
+# =========================
+st.markdown("---")
+st.header("Run Disaggregation")
+
+if st.button("Run processing", type="primary"):
+    loc = normalize_columns(df_loc, st.session_state.get("norm_loc_maps", {}))
+    ctrl = normalize_columns(df_ctrl, st.session_state.get("norm_ctrl_maps", {}))
+    result = run_disagg(ctrl, loc, loc_map, ctrl_map)
+    st.session_state["merged_result"] = result
+    st.success("Processing completed successfully!")
+
+# =========================
+# RESULTS + PIVOT
 # =========================
 if "merged_result" in st.session_state:
-    df = st.session_state["merged_result"]
-    st.subheader("Result Snapshot")
-    st.caption(f"Total rows: {len(df)} | Layer counts: {st.session_state['merge_info']}")
-    st.dataframe(df.head(50), use_container_width=True)
+    merged = st.session_state["merged_result"]
 
+    st.subheader("Results snapshot")
+    st.dataframe(merged.head(100), use_container_width=True)
 # =========================
 # PIVOT TABLE (Excel-style)
 # =========================
@@ -303,9 +365,24 @@ else:
         st.error(f"Pivot error: {e}")
 
 
-# --- footer
+    # Download result
+    out_buf = io.BytesIO()
+    with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
+        merged.to_excel(writer, sheet_name="Result", index=False)
+    st.download_button(
+        "Download Excel result",
+        data=out_buf.getvalue(),
+        file_name="mapping_result.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+# --- Footer ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown(
-    "<div style='text-align:center;font-size:13px;color:#666;'>Crafted with ❤️ by BGSV/CTG Data Team</div>",
+    """
+    <div style="text-align:center; font-size:13px; color:#666; margin-top:8px;">
+        Crafted with care by <strong>BGSV/CTG Data Team</strong>.
+    </div>
+    """,
     unsafe_allow_html=True,
 )
