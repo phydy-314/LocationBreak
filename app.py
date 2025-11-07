@@ -154,60 +154,6 @@ sheet_ctrl = st.selectbox("Controlling sheet", options=list(all_sheets.keys()), 
 
 df_loc = all_sheets[sheet_loc].copy()
 df_ctrl = all_sheets[sheet_ctrl].copy()
-# =========================
-# LAYER MAPPING (Dynamic)
-# =========================
-st.markdown("---")
-st.header("Layer Mapping")
-
-st.caption("Define multiple matching layers. Each layer must have 4 columns (e.g. GB, Dept, EmpType, Month).")
-
-# --- Session init ---
-st.session_state.setdefault("layers", [{"cols": [None, None, None, None]}])
-
-def add_layer():
-    st.session_state["layers"].append({"cols": [None, None, None, None]})
-    st.rerun()
-
-def remove_layer(i: int):
-    if 0 <= i < len(st.session_state["layers"]):
-        st.session_state["layers"].pop(i)
-    st.rerun()
-
-# --- Render each Layer ---
-for i, layer in enumerate(st.session_state["layers"]):
-    st.markdown(f"**Layer {i+1}** (select 4 columns)")
-    cols = st.columns(4)
-    loc_columns = list(df_loc.columns)
-    for j, c in enumerate(cols):
-        with c:
-            opts = [None] + loc_columns
-            selected = st.selectbox(
-                f"Column {j+1}",
-                options=opts,
-                index=opts.index(layer["cols"][j]) if layer["cols"][j] in opts else 0,
-                key=f"layer_{i}_col_{j}",
-            )
-            layer["cols"][j] = selected
-
-    # Check if layer is valid
-    valid = all(layer["cols"])
-    msg = "✅ Ready" if valid else "⚠️ Please select all 4 columns"
-    st.caption(msg)
-
-    st.button("❌ Remove", key=f"remove_layer_{i}", on_click=remove_layer, args=(i,))
-
-st.button("➕ Add Layer", on_click=add_layer)
-
-# --- Save back ---
-st.session_state["layers"] = st.session_state["layers"]
-
-# --- Validation ---
-all_valid = all(all(c for c in layer["cols"]) for layer in st.session_state["layers"])
-if not all_valid:
-    st.warning("Some layers are incomplete. Please select all 4 columns per layer.")
-else:
-    st.success(f"✅ {len(st.session_state['layers'])} layers configured properly!")
 
 # =========================
 # BREAK CONFIGURATION (separate section)
@@ -378,7 +324,60 @@ with tab_ctrl:
         st.session_state["norm_ctrl_maps"][col] = {
             str(a): str(b) for a, b in edited.itertuples(index=False)
         }
+# =========================
+# LAYER MAPPING (Dynamic)
+# =========================
+st.markdown("---")
+st.header("Layer Mapping")
 
+st.caption("Define multiple matching layers. Each layer must have 4 columns (e.g. GB, Dept, EmpType, Month).")
+
+# --- Session init ---
+st.session_state.setdefault("layers", [{"cols": [None, None, None, None]}])
+
+def add_layer():
+    st.session_state["layers"].append({"cols": [None, None, None, None]})
+    st.rerun()
+
+def remove_layer(i: int):
+    if 0 <= i < len(st.session_state["layers"]):
+        st.session_state["layers"].pop(i)
+    st.rerun()
+
+# --- Render each Layer ---
+for i, layer in enumerate(st.session_state["layers"]):
+    st.markdown(f"**Layer {i+1}** (select 4 columns)")
+    cols = st.columns(4)
+    loc_columns = list(df_loc.columns)
+    for j, c in enumerate(cols):
+        with c:
+            opts = [None] + loc_columns
+            selected = st.selectbox(
+                f"Column {j+1}",
+                options=opts,
+                index=opts.index(layer["cols"][j]) if layer["cols"][j] in opts else 0,
+                key=f"layer_{i}_col_{j}",
+            )
+            layer["cols"][j] = selected
+
+    # Check if layer is valid
+    valid = all(layer["cols"])
+    msg = "Ready" if valid else "Please select all 4 columns"
+    st.caption(msg)
+
+    st.button("❌ Remove", key=f"remove_layer_{i}", on_click=remove_layer, args=(i,))
+
+st.button("➕ Add Layer", on_click=add_layer)
+
+# --- Save back ---
+st.session_state["layers"] = st.session_state["layers"]
+
+# --- Validation ---
+all_valid = all(all(c for c in layer["cols"]) for layer in st.session_state["layers"])
+if not all_valid:
+    st.warning("Some layers are incomplete. Please select all 4 columns per layer.")
+else:
+    st.success(f"{len(st.session_state['layers'])} layers configured properly!")
 # =========================
 # RUN
 # =========================
