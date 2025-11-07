@@ -9,6 +9,9 @@ import streamlit as st
 # =========================
 # PAGE CONFIG
 # =========================
+import streamlit as st
+st.error("🔥 You are running the NEW version with run_disagg() — not fallback_merge!")
+
 st.set_page_config(page_title="Proportional Disaggregation", layout="wide")
 st.title("Proportional Disaggregation")
 
@@ -154,6 +157,32 @@ sheet_ctrl = st.selectbox("Controlling sheet", options=list(all_sheets.keys()), 
 
 df_loc = all_sheets[sheet_loc].copy()
 df_ctrl = all_sheets[sheet_ctrl].copy()
+
+# =========================
+# BREAK CONFIGURATION (separate section)
+# =========================
+st.markdown("---")
+st.header("Break Configuration")
+
+st.markdown(
+    """
+    <div style="padding:10px 16px; background-color:#f8f9fa; border-radius:8px; border-left:4px solid #007ACC;">
+        <p style="margin:0; font-weight:500;">Select the dimension used for proportional breaking 
+        (e.g. by <b>Location</b>, <b>Department</b>, <b>GB</b>, or <b>Employee Type</b>).</p>
+    </div>
+    """, unsafe_allow_html=True
+)
+
+break_candidates = ["emp_location", "dept", "gb", "emp_type"]
+break_col_key = st.selectbox(
+    "Select Break Dimension",
+    options=break_candidates,
+    index=0,
+    key="break_dimension"
+)
+
+st.caption(f"→ The disaggregation will be computed based on **{break_col_key}** capacity.")
+
 
 # =========================
 # COLUMN MAPPING
