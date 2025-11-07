@@ -285,10 +285,14 @@ tab_loc, tab_ctrl = st.tabs(["Location", "Controlling"])
 
 with tab_loc:
     loc_cols = list(df_loc.columns)
+    default_loc = [
+        c for c in [loc_map.get("emp_type"), loc_map.get("emp_location")]
+        if c in loc_cols
+    ]
     sel_loc_cols = st.multiselect(
         "Columns to normalize (Location)",
         options=loc_cols,
-        default=[loc_map.get("emp_type"), loc_map.get("emp_location")],
+        default=default_loc,
     )
     for col in sel_loc_cols:
         st.markdown(f"**Column:** `{col}`")
@@ -302,10 +306,14 @@ with tab_loc:
 
 with tab_ctrl:
     ctrl_cols = list(df_ctrl.columns)
+    default_ctrl = [
+        c for c in [ctrl_map.get("emp_type_like"), ctrl_map.get("dept")]
+        if c in ctrl_cols
+    ]
     sel_ctrl_cols = st.multiselect(
         "Columns to normalize (Controlling)",
         options=ctrl_cols,
-        default=[ctrl_map.get("emp_type_like"), ctrl_map.get("dept")],
+        default=default_ctrl,
     )
     for col in sel_ctrl_cols:
         st.markdown(f"**Column:** `{col}`")
