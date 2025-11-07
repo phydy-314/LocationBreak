@@ -23,7 +23,7 @@ st.markdown(
 )
 
 # =========================
-# CONSTANTS
+# CONSTANTSvaof 
 # =========================
 DEFAULT_NORMALIZATION = {
     "emp_type_map": {
@@ -107,24 +107,41 @@ def sample_mapping_table(df: pd.DataFrame, col: str, existing: dict | None, max_
 
 def compute_ratio_expanding(df_loc, keys, break_col, cap_col):
     """Compute proportional ratio based on selected break column (e.g., Location, Dept...)."""
+
     df = df_loc.copy()
+
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    # st.write("DEBUG columns:", df.columns.tolist())
+    # st.write("Duplicate columns:", df.columns[df.columns.duplicated()].tolist())
+
+    if break_col not in df.columns:
+        raise ValueError(f"Break column '{break_col}' not found in Location sheet. Available: {df.columns.tolist()}")
+
     use_cols = [c for c in keys + [break_col, cap_col] if c in df.columns]
     df = df[use_cols].copy()
 
     cap_by_dim = (
         df.groupby(keys + [break_col], dropna=False, as_index=False)[cap_col]
-        .sum().rename(columns={cap_col: "_cap_dim"})
+        .sum()
+        .rename(columns={cap_col: "_cap_dim"})
     )
+
     cap_total = (
         df.groupby(keys, dropna=False, as_index=False)[cap_col]
-        .sum().rename(columns={cap_col: "_cap_total"})
+        .sum()
+        .rename(columns={cap_col: "_cap_total"})
     )
+
     ratio_df = cap_by_dim.merge(cap_total, on=keys, how="left")
     denom = ratio_df["_cap_total"]
+
     with np.errstate(invalid="ignore", divide="ignore"):
         ratio_df["Ratio"] = ratio_df["_cap_dim"] / denom.replace({0: np.nan})
+
     ratio_df.loc[denom.fillna(0).eq(0), "Ratio"] = 0.0
     return ratio_df.drop(columns=["_cap_dim", "_cap_total"])
+
 
 def coalesce_to(df: pd.DataFrame, canonical: str, base_names: list[str]) -> pd.DataFrame:
     cand_cols = []
